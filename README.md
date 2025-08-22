@@ -2,8 +2,6 @@
 
 <div align="center">
 
-![Claude Code Rewind Logo](https://via.placeholder.com/200x200/6366f1/white?text=⏰)
-
 **Time Travel for Your Claude Code Sessions**
 
 [![GitHub Stars](https://img.shields.io/github/stars/holasoymalva/claude-code-rewind?style=for-the-badge&logo=github&color=ffb400)](https://github.com/holasoymalva/claude-code-rewind/stargazers)
