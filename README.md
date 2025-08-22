@@ -16,10 +16,6 @@
 
 Claude Code Rewind Tool is the **first-ever time machine for Claude Code sessions**. Never again worry about AI breaking your code. Automatically capture every change, visualize exactly what happened, and rollback to any point with surgical precision.
 
-> *"This tool saved my entire refactor. Claude made a mistake in step 47 of 50, and I was able to rollback just that specific change while keeping everything else. Mind blown!"* 
-> 
-> — **Sarah Chen**, Senior Engineer at Stripe
-
 ---
 
 ## ⚡ **The Problem We Solve**
