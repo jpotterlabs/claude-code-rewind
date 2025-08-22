@@ -1,8 +1,8 @@
-# ⏰ Claude Rewind Tool
+# ⏰ Claude Code Rewind Tool
 
 <div align="center">
 
-![Claude Rewind Logo](https://via.placeholder.com/200x200/6366f1/white?text=⏰)
+![Claude Code Rewind Logo](https://via.placeholder.com/200x200/6366f1/white?text=⏰)
 
 **Time Travel for Your Claude Code Sessions**
 
@@ -21,7 +21,7 @@
 
 ## 🚀 **What if you could undo any AI mistake in seconds?**
 
-Claude Rewind Tool is the **first-ever time machine for Claude Code sessions**. Never again worry about AI breaking your code. Automatically capture every change, visualize exactly what happened, and rollback to any point with surgical precision.
+Claude Code Rewind Tool is the **first-ever time machine for Claude Code sessions**. Never again worry about AI breaking your code. Automatically capture every change, visualize exactly what happened, and rollback to any point with surgical precision.
 
 > *"This tool saved my entire refactor. Claude made a mistake in step 47 of 50, and I was able to rollback just that specific change while keeping everything else. Mind blown!"* 
 > 
@@ -38,7 +38,7 @@ Every developer using Claude Code has experienced this nightmare:
 - 😤 **"Now I have to manually undo everything"**
 - 😱 **"I lost 3 hours of progress"**
 
-**Claude Rewind Tool eliminates this fear forever.**
+**Claude Code Rewind Tool eliminates this fear forever.**
 
 ---
 
@@ -92,7 +92,7 @@ pip install -e .
 cd your-project
 claude-rewind init
 
-# That's it! Claude Rewind Tool is now protecting your code
+# That's it! Claude Code Rewind Tool is now protecting your code
 ```
 
 ### Basic Usage
@@ -221,7 +221,7 @@ hooks:
 
 <div align="center">
 
-| Metric | Before Claude Rewind | After Claude Rewind |
+| Metric | Before Claude Code Rewind | After Claude Code Rewind |
 |--------|---------------------|-------------------|
 | 😰 Fear of AI changes | **High** | **None** |
 | ⏱️ Time spent debugging AI mistakes | **2-3 hours/week** | **< 30 minutes/week** |
@@ -337,7 +337,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 <div align="center">
 
-**⭐ Star this repo if Claude Rewind Tool saved your day!**
+**⭐ Star this repo if Claude Code Rewind Tool saved your day!**
 
 [![Star History Chart](https://api.star-history.com/svg?repos=yourusername/claude-rewind-tool&type=Date)](https://star-history.com/#yourusername/claude-rewind-tool&Date)
 
