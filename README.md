@@ -4,14 +4,9 @@
 
 **Time Travel for Your Claude Code Sessions**
 
-[![GitHub Stars](https://img.shields.io/github/stars/holasoymalva/claude-code-rewind?style=for-the-badge&logo=github&color=ffb400)](https://github.com/holasoymalva/claude-code-rewind/stargazers)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776ab.svg?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-Compatible-6366f1.svg?style=for-the-badge)](https://claude.ai/code)
-
-[![Downloads](https://img.shields.io/pypi/dm/claude-code-rewind?style=for-the-badge&color=success)](https://pypi.org/project/claude-code-rewind/)
-[![CI/CD](https://img.shields.io/github/actions/workflow/status/holasoymalva/claude-code-rewind/ci.yml?style=for-the-badge&logo=github-actions)](https://github.com/holasoymalva/claude-code-rewind/actions)
-[![Discord](https://img.shields.io/discord/123456789?style=for-the-badge&logo=discord&color=7289da)](https://discord.gg/claude-rewind)
 
 </div>
 
