@@ -6,13 +6,13 @@
 
 **Time Travel for Your Claude Code Sessions**
 
-[![GitHub Stars](https://img.shields.io/github/stars/holasoymalva/claude-rewind-tool?style=for-the-badge&logo=github&color=ffb400)](https://github.com/holasoymalva/claude-rewind-tool/stargazers)
+[![GitHub Stars](https://img.shields.io/github/stars/holasoymalva/claude-code-rewind?style=for-the-badge&logo=github&color=ffb400)](https://github.com/holasoymalva/claude-code-rewind/stargazers)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776ab.svg?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-Compatible-6366f1.svg?style=for-the-badge)](https://claude.ai/code)
 
-[![Downloads](https://img.shields.io/pypi/dm/claude-rewind-tool?style=for-the-badge&color=success)](https://pypi.org/project/claude-rewind-tool/)
-[![CI/CD](https://img.shields.io/github/actions/workflow/status/holasoymalva/claude-rewind-tool/ci.yml?style=for-the-badge&logo=github-actions)](https://github.com/holasoymalva/claude-rewind-tool/actions)
+[![Downloads](https://img.shields.io/pypi/dm/claude-code-rewind?style=for-the-badge&color=success)](https://pypi.org/project/claude-code-rewind/)
+[![CI/CD](https://img.shields.io/github/actions/workflow/status/holasoymalva/claude-code-rewind/ci.yml?style=for-the-badge&logo=github-actions)](https://github.com/holasoymalva/claude-code-rewind/actions)
 [![Discord](https://img.shields.io/discord/123456789?style=for-the-badge&logo=discord&color=7289da)](https://discord.gg/claude-rewind)
 
 </div>
@@ -75,14 +75,14 @@ Every developer using Claude Code has experienced this nightmare:
 
 ```bash
 # Install via pip (recommended)
-pip install claude-rewind-tool
+pip install claude-code-rewind
 
 # Or install via npm
-npm install -g claude-rewind-tool
+npm install -g claude-code-rewind
 
 # Or clone and install from source
-git clone https://github.com/holasoymalva/claude-rewind-tool.git
-cd claude-rewind-tool
+git clone https://github.com/holasoymalva/claude-code-rewind.git
+cd claude-code-rewind
 pip install -e .
 ```
 
@@ -275,8 +275,8 @@ We're building something amazing together!
 ### 🚀 **Getting Started**
 ```bash
 # Clone the repo
-git clone https://github.com/holasoymalva/claude-rewind-tool.git
-cd claude-rewind-tool
+git clone https://github.com/holasoymalva/claude-code-rewind.git
+cd claude-code-rewind
 
 # Set up development environment
 python -m venv venv
@@ -315,7 +315,7 @@ pytest
 
 - 💬 [Discord Community](https://discord.gg/claude-rewind)
 - 📧 [Email Support](mailto:support@claude-rewind.dev)
-- 🐛 [GitHub Issues](https://github.com/holasoymalva/claude-rewind-tool/issues)
+- 🐛 [GitHub Issues](https://github.com/holasoymalva/claude-code-rewind/issues)
 - 📚 [Documentation](https://docs.claude-rewind.dev)
 - 🐦 [Twitter Updates](https://twitter.com/claude_rewind)
 
@@ -339,7 +339,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 **⭐ Star this repo if Claude Code Rewind Tool saved your day!**
 
-[![Star History Chart](https://api.star-history.com/svg?repos=holasoymalva/claude-rewind-tool&type=Date)](https://star-history.com/#holasoymalva/claude-rewind-tool&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=holasoymalva/claude-code-rewind&type=Date)](https://star-history.com/#holasoymalva/claude-code-rewind&Date)
 
 *Made with 💜 for the Claude Code community*
 
