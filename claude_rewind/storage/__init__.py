@@ -1,0 +1,1 @@
+"""Storage layer components for snapshot and metadata management."""
