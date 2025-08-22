@@ -332,8 +332,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 **⭐ Star this repo if Claude Code Rewind Tool saved your day!**
 
-[![Star History Chart](https://api.star-history.com/svg?repos=holasoymalva/claude-code-rewind&type=Date)](https://star-history.com/#holasoymalva/claude-code-rewind&Date)
-
-*Made with 💜 for the Claude Code community*
+*Made with 💜 for the Claude Code Community*
 
 </div>
