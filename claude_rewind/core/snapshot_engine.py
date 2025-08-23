@@ -4,9 +4,11 @@ import hashlib
 import logging
 import os
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Any
 
 from .interfaces import ISnapshotEngine
 from .models import (
@@ -15,6 +17,7 @@ from .models import (
 )
 from ..storage.database import DatabaseManager
 from ..storage.file_store import FileStore
+from .config import PerformanceConfig
 
 
 logger = logging.getLogger(__name__)
@@ -28,25 +31,42 @@ class SnapshotEngineError(Exception):
 class SnapshotEngine(ISnapshotEngine):
     """Core engine for creating and managing project snapshots."""
     
-    def __init__(self, project_root: Path, storage_root: Path):
+    def __init__(self, project_root: Path, storage_root: Path, 
+                 performance_config: Optional[PerformanceConfig] = None):
         """Initialize snapshot engine.
         
         Args:
             project_root: Root directory of the project to snapshot
             storage_root: Root directory for snapshot storage
+            performance_config: Performance configuration settings
         """
         self.project_root = project_root.resolve()
         self.storage_root = storage_root
+        self.performance_config = performance_config or PerformanceConfig()
         
-        # Initialize storage components
+        # Initialize storage components with performance config
         self.db_manager = DatabaseManager(storage_root / "metadata.db")
-        self.file_store = FileStore(storage_root)
+        self.file_store = FileStore(
+            storage_root, 
+            compression_level=getattr(performance_config, 'compression_level', 3) if performance_config else 3
+        )
         
         # Cache for file states to optimize incremental snapshots
         self._last_snapshot_states: Dict[Path, FileState] = {}
         self._last_snapshot_id: Optional[SnapshotId] = None
         
+        # Performance optimization caches
+        self._file_hash_cache: Dict[Tuple[Path, float, int], str] = {}  # (path, mtime, size) -> hash
+        self._cache_lock = threading.Lock()
+        
+        # Lazy loading cache for large files
+        self._lazy_content_cache: Dict[str, bytes] = {}
+        self._lazy_cache_lock = threading.Lock()
+        
         logger.info(f"SnapshotEngine initialized for project: {project_root}")
+        logger.debug(f"Performance config: max_file_size={self.performance_config.max_file_size_mb}MB, "
+                    f"parallel={self.performance_config.parallel_processing}, "
+                    f"memory_limit={self.performance_config.memory_limit_mb}MB")
     
     def create_snapshot(self, context: ActionContext) -> SnapshotId:
         """Create a new snapshot of the current project state.
@@ -251,10 +271,14 @@ class SnapshotEngine(ISnapshotEngine):
         Returns:
             Dictionary mapping file paths to their current states
         """
+        start_time = time.time()
         file_states = {}
         
         try:
-            # Walk through all files in project
+            # Collect all files to process
+            files_to_process = []
+            total_size = 0
+            
             for root, dirs, files in os.walk(self.project_root):
                 root_path = Path(root)
                 
@@ -269,33 +293,130 @@ class SnapshotEngine(ISnapshotEngine):
                         continue
                     
                     try:
-                        # Get file stats
                         stat = file_path.stat()
+                        file_size_mb = stat.st_size / (1024 * 1024)
                         
-                        # Calculate content hash
-                        content_hash = self._calculate_file_hash(file_path)
+                        # Skip files that are too large
+                        if file_size_mb > self.performance_config.max_file_size_mb:
+                            logger.warning(f"Skipping large file {file_path}: {file_size_mb:.1f}MB")
+                            continue
                         
-                        # Create file state
-                        relative_path = file_path.relative_to(self.project_root)
-                        file_states[relative_path] = FileState(
-                            path=relative_path,
-                            content_hash=content_hash,
-                            size=stat.st_size,
-                            modified_time=datetime.fromtimestamp(stat.st_mtime),
-                            permissions=stat.st_mode,
-                            exists=True
-                        )
+                        files_to_process.append((file_path, stat))
+                        total_size += stat.st_size
                         
                     except Exception as e:
-                        logger.warning(f"Failed to process file {file_path}: {e}")
+                        logger.warning(f"Failed to stat file {file_path}: {e}")
                         continue
             
-            logger.debug(f"Scanned {len(file_states)} files in project")
+            # Check if project is too large
+            total_size_gb = total_size / (1024 * 1024 * 1024)
+            if total_size_gb > 1.0:
+                logger.warning(f"Large project detected: {total_size_gb:.2f}GB")
+            
+            # Process files with parallel processing if enabled and beneficial
+            if (self.performance_config.parallel_processing and 
+                len(files_to_process) > 10):  # Only use parallel for larger projects
+                
+                file_states = self._scan_files_parallel(files_to_process)
+            else:
+                file_states = self._scan_files_sequential(files_to_process)
+            
+            elapsed_time = time.time() - start_time
+            logger.debug(f"Scanned {len(file_states)} files in {elapsed_time:.3f}s "
+                        f"({total_size_gb:.2f}GB total)")
+            
+            # Warn if scan took too long
+            if elapsed_time > 0.5:  # 500ms target
+                logger.warning(f"Project scan took {elapsed_time:.3f}s, exceeding 500ms target")
+            
             return file_states
             
         except Exception as e:
             logger.error(f"Failed to scan project state: {e}")
             raise SnapshotEngineError(f"Project scan failed: {e}")
+    
+    def _scan_files_sequential(self, files_to_process: List[Tuple[Path, os.stat_result]]) -> Dict[Path, FileState]:
+        """Scan files sequentially.
+        
+        Args:
+            files_to_process: List of (file_path, stat_result) tuples
+            
+        Returns:
+            Dictionary mapping file paths to their states
+        """
+        file_states = {}
+        
+        for file_path, stat in files_to_process:
+            try:
+                # Calculate content hash with caching
+                content_hash = self._calculate_file_hash_cached(file_path, stat)
+                
+                # Create file state
+                relative_path = file_path.relative_to(self.project_root)
+                file_states[relative_path] = FileState(
+                    path=relative_path,
+                    content_hash=content_hash,
+                    size=stat.st_size,
+                    modified_time=datetime.fromtimestamp(stat.st_mtime),
+                    permissions=stat.st_mode,
+                    exists=True
+                )
+                
+            except Exception as e:
+                logger.warning(f"Failed to process file {file_path}: {e}")
+                continue
+        
+        return file_states
+    
+    def _scan_files_parallel(self, files_to_process: List[Tuple[Path, os.stat_result]]) -> Dict[Path, FileState]:
+        """Scan files in parallel using thread pool.
+        
+        Args:
+            files_to_process: List of (file_path, stat_result) tuples
+            
+        Returns:
+            Dictionary mapping file paths to their states
+        """
+        file_states = {}
+        max_workers = min(4, len(files_to_process))  # Limit concurrent threads
+        
+        def process_file(file_path: Path, stat: os.stat_result) -> Optional[Tuple[Path, FileState]]:
+            try:
+                # Calculate content hash with caching
+                content_hash = self._calculate_file_hash_cached(file_path, stat)
+                
+                # Create file state
+                relative_path = file_path.relative_to(self.project_root)
+                file_state = FileState(
+                    path=relative_path,
+                    content_hash=content_hash,
+                    size=stat.st_size,
+                    modified_time=datetime.fromtimestamp(stat.st_mtime),
+                    permissions=stat.st_mode,
+                    exists=True
+                )
+                
+                return (relative_path, file_state)
+                
+            except Exception as e:
+                logger.warning(f"Failed to process file {file_path}: {e}")
+                return None
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            future_to_file = {
+                executor.submit(process_file, file_path, stat): (file_path, stat)
+                for file_path, stat in files_to_process
+            }
+            
+            # Collect results
+            for future in as_completed(future_to_file):
+                result = future.result()
+                if result:
+                    relative_path, file_state = result
+                    file_states[relative_path] = file_state
+        
+        return file_states
     
     def _calculate_file_hash(self, file_path: Path) -> str:
         """Calculate SHA-256 hash of file content.
@@ -320,6 +441,44 @@ class SnapshotEngine(ISnapshotEngine):
             logger.warning(f"Failed to hash file {file_path}: {e}")
             # Return a placeholder hash for files we can't read
             return f"error_{int(time.time())}"
+    
+    def _calculate_file_hash_cached(self, file_path: Path, stat: os.stat_result) -> str:
+        """Calculate SHA-256 hash of file content with caching.
+        
+        Uses file modification time and size as cache key to avoid
+        recalculating hashes for unchanged files.
+        
+        Args:
+            file_path: Path to file
+            stat: File stat result
+            
+        Returns:
+            SHA-256 hash as hex string
+        """
+        # Create cache key from path, mtime, and size
+        cache_key = (file_path, stat.st_mtime, stat.st_size)
+        
+        with self._cache_lock:
+            if cache_key in self._file_hash_cache:
+                return self._file_hash_cache[cache_key]
+        
+        # Calculate hash
+        content_hash = self._calculate_file_hash(file_path)
+        
+        # Cache the result
+        with self._cache_lock:
+            # Limit cache size to prevent memory issues
+            cache_limit = getattr(self.performance_config, 'cache_size_limit', 10000)
+            if len(self._file_hash_cache) >= cache_limit:
+                # Remove oldest entries (simple FIFO)
+                num_to_remove = max(1, cache_limit // 10)  # Remove 10% of cache
+                oldest_keys = list(self._file_hash_cache.keys())[:num_to_remove]
+                for key in oldest_keys:
+                    del self._file_hash_cache[key]
+            
+            self._file_hash_cache[cache_key] = content_hash
+        
+        return content_hash
     
     def _detect_file_changes(self, current_states: Dict[Path, FileState]) -> List[FileChange]:
         """Detect changes between current state and last snapshot.
@@ -487,6 +646,144 @@ class SnapshotEngine(ISnapshotEngine):
                     return True
         
         return False
+    
+    def get_file_content_lazy(self, snapshot_id: SnapshotId, file_path: Path) -> Optional[bytes]:
+        """Lazily load file content from snapshot.
+        
+        This method loads file content on-demand rather than loading all
+        content when retrieving a snapshot. Useful for large files.
+        
+        Args:
+            snapshot_id: Snapshot identifier
+            file_path: Path to file within snapshot
+            
+        Returns:
+            File content as bytes, or None if not found
+        """
+        try:
+            # Check lazy cache first
+            cache_key = f"{snapshot_id}:{file_path}"
+            with self._lazy_cache_lock:
+                if cache_key in self._lazy_content_cache:
+                    return self._lazy_content_cache[cache_key]
+            
+            # Get snapshot manifest
+            manifest = self.file_store.get_snapshot_manifest(snapshot_id)
+            
+            # Try different path formats to find the file
+            file_key = str(file_path)
+            if file_key not in manifest['files']:
+                # Try absolute path
+                abs_path = self.project_root / file_path
+                file_key = str(abs_path)
+                if file_key not in manifest['files']:
+                    # Try with forward slashes
+                    file_key = str(file_path).replace('\\', '/')
+                    if file_key not in manifest['files']:
+                        logger.debug(f"File not found in manifest: {file_path}")
+                        logger.debug(f"Available files: {list(manifest['files'].keys())[:5]}...")
+                        return None
+            
+            file_info = manifest['files'][file_key]
+            if not file_info['exists']:
+                return None
+            
+            # Retrieve content from file store
+            content = self.file_store.retrieve_content(file_info['content_hash'])
+            
+            # Cache content if it's not too large
+            content_size_mb = len(content) / (1024 * 1024)
+            if content_size_mb < 10:  # Cache files smaller than 10MB
+                with self._lazy_cache_lock:
+                    # Limit cache size
+                    if len(self._lazy_content_cache) > 100:
+                        # Remove oldest entry
+                        oldest_key = next(iter(self._lazy_content_cache))
+                        del self._lazy_content_cache[oldest_key]
+                    
+                    self._lazy_content_cache[cache_key] = content
+            
+            return content
+            
+        except Exception as e:
+            logger.error(f"Failed to load content for {file_path} in {snapshot_id}: {e}")
+            return None
+    
+    def preload_snapshot_content(self, snapshot_id: SnapshotId, 
+                               file_paths: Optional[List[Path]] = None) -> None:
+        """Preload content for specific files in a snapshot.
+        
+        This can be used to warm up the lazy loading cache for files
+        that are likely to be accessed soon.
+        
+        Args:
+            snapshot_id: Snapshot identifier
+            file_paths: Specific files to preload, or None for all files
+        """
+        try:
+            snapshot = self.get_snapshot(snapshot_id)
+            if not snapshot:
+                return
+            
+            paths_to_load = file_paths or list(snapshot.file_states.keys())
+            
+            # Use parallel loading for multiple files
+            if len(paths_to_load) > 1 and self.performance_config.parallel_processing:
+                max_workers = min(4, len(paths_to_load))
+                
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = [
+                        executor.submit(self.get_file_content_lazy, snapshot_id, path)
+                        for path in paths_to_load
+                    ]
+                    
+                    # Wait for completion
+                    for future in as_completed(futures):
+                        future.result()  # This will raise any exceptions
+            else:
+                # Sequential loading
+                for path in paths_to_load:
+                    self.get_file_content_lazy(snapshot_id, path)
+            
+            logger.debug(f"Preloaded content for {len(paths_to_load)} files in {snapshot_id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to preload content for {snapshot_id}: {e}")
+    
+    def clear_caches(self) -> None:
+        """Clear all internal caches to free memory."""
+        with self._cache_lock:
+            self._file_hash_cache.clear()
+        
+        with self._lazy_cache_lock:
+            self._lazy_content_cache.clear()
+        
+        logger.debug("Cleared all caches")
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Get statistics about cache usage.
+        
+        Returns:
+            Dictionary with cache statistics
+        """
+        with self._cache_lock:
+            hash_cache_size = len(self._file_hash_cache)
+        
+        with self._lazy_cache_lock:
+            content_cache_size = len(self._lazy_content_cache)
+            content_cache_memory = sum(len(content) for content in self._lazy_content_cache.values())
+        
+        return {
+            'hash_cache_entries': hash_cache_size,
+            'content_cache_entries': content_cache_size,
+            'content_cache_memory_mb': content_cache_memory / (1024 * 1024),
+            'performance_config': {
+                'max_file_size_mb': self.performance_config.max_file_size_mb,
+                'parallel_processing': self.performance_config.parallel_processing,
+                'memory_limit_mb': self.performance_config.memory_limit_mb,
+                'snapshot_timeout_seconds': self.performance_config.snapshot_timeout_seconds
+            }
+        }
     
     def get_incremental_stats(self) -> Dict[str, int]:
         """Get statistics about incremental snapshot efficiency.

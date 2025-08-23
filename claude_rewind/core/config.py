@@ -55,6 +55,10 @@ class PerformanceConfig:
     parallel_processing: bool = True
     memory_limit_mb: int = 500
     snapshot_timeout_seconds: int = 30
+    compression_level: int = 3
+    lazy_loading_enabled: bool = True
+    cache_size_limit: int = 10000
+    target_snapshot_time_ms: int = 500
 
 
 @dataclass

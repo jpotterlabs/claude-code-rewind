@@ -36,7 +36,7 @@ class FileStore:
             compression_level: Zstandard compression level (1-22, default 3)
         """
         self.storage_root = storage_root
-        self.compression_level = compression_level
+        self.compression_level = max(1, min(22, compression_level))  # Clamp to valid range
         self.snapshots_dir = storage_root / "snapshots"
         self.content_dir = storage_root / "content"
         
@@ -44,11 +44,66 @@ class FileStore:
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)
         self.content_dir.mkdir(parents=True, exist_ok=True)
         
-        # Initialize compressor
-        self.compressor = zstd.ZstdCompressor(level=compression_level)
+        # Initialize compressor with performance optimizations
+        compressor_params = {
+            'level': self.compression_level,
+            'write_content_size': True,  # Include content size in compressed data
+            'write_checksum': True,      # Include checksum for integrity
+        }
+        
+        # Optimize for speed vs compression based on level
+        if self.compression_level <= 3:
+            # Fast compression for real-time snapshots
+            compressor_params['threads'] = -1  # Use all available threads
+        
+        self.compressor = zstd.ZstdCompressor(**compressor_params)
         self.decompressor = zstd.ZstdDecompressor()
         
-        logger.debug(f"FileStore initialized at {storage_root}")
+        logger.debug(f"FileStore initialized at {storage_root} with compression level {self.compression_level}")
+    
+    def set_compression_level(self, level: int) -> None:
+        """Dynamically adjust compression level.
+        
+        Args:
+            level: New compression level (1-22)
+        """
+        new_level = max(1, min(22, level))
+        if new_level != self.compression_level:
+            self.compression_level = new_level
+            
+            # Reinitialize compressor with new level
+            compressor_params = {
+                'level': self.compression_level,
+                'write_content_size': True,
+                'write_checksum': True,
+            }
+            
+            if self.compression_level <= 3:
+                compressor_params['threads'] = -1
+            
+            self.compressor = zstd.ZstdCompressor(**compressor_params)
+            logger.debug(f"Updated compression level to {self.compression_level}")
+    
+    def get_optimal_compression_level(self, target_time_ms: float = 500) -> int:
+        """Determine optimal compression level based on performance target.
+        
+        Args:
+            target_time_ms: Target compression time in milliseconds
+            
+        Returns:
+            Recommended compression level
+        """
+        # Simple heuristic based on target time
+        if target_time_ms < 100:
+            return 1  # Fastest compression
+        elif target_time_ms < 300:
+            return 2  # Fast compression
+        elif target_time_ms < 500:
+            return 3  # Balanced (default)
+        elif target_time_ms < 1000:
+            return 6  # Better compression
+        else:
+            return 9  # Best compression
     
     def _get_content_path(self, content_hash: ContentHash) -> Path:
         """Get storage path for content by hash.
@@ -137,8 +192,12 @@ class FileStore:
             return content_hash
         
         try:
-            # Create directory if needed
-            content_path.parent.mkdir(parents=True, exist_ok=True)
+            # Create directory if needed (thread-safe)
+            try:
+                content_path.parent.mkdir(parents=True, exist_ok=True)
+            except FileExistsError:
+                # Another thread created it, that's fine
+                pass
             
             # Compress and store content
             compressed_content = self._compress_content(content)
