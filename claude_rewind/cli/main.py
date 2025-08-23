@@ -1,6 +1,7 @@
 """Main CLI entry point for Claude Rewind Tool."""
 
 import click
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -23,10 +24,24 @@ def cli(ctx: click.Context, config: Optional[str], project_root: Optional[str], 
     project_path = Path(project_root) if project_root else Path.cwd()
     config_manager = ConfigManager(project_path)
     
-    if config:
-        config_data = config_manager.load_config(Path(config))
-    else:
-        config_data = config_manager.load_config()
+    try:
+        if config:
+            config_data = config_manager.load_config(Path(config))
+        else:
+            config_data = config_manager.load_config()
+        
+        # Validate configuration
+        validation_errors = config_manager.validate_config(config_data)
+        if validation_errors:
+            click.echo("Configuration validation errors:", err=True)
+            for error in validation_errors:
+                click.echo(f"  - {error}", err=True)
+            if not ctx.resilient_parsing:
+                sys.exit(1)
+    except Exception as e:
+        if verbose:
+            click.echo(f"Error loading configuration: {e}", err=True)
+        config_data = config_manager.get_default_config()
     
     # Store in context for subcommands
     ctx.obj['config'] = config_data
@@ -90,10 +105,100 @@ def status(ctx: click.Context):
 
 
 @cli.command()
+@click.option('--dry-run', is_flag=True, help='Show what would be cleaned up without actually doing it')
+@click.option('--force', is_flag=True, help='Skip confirmation prompts')
 @click.pass_context
-def cleanup(ctx: click.Context):
+def cleanup(ctx: click.Context, dry_run: bool, force: bool):
     """Clean up old snapshots based on configuration."""
-    click.echo("Cleanup functionality will be implemented in task 2.1")
+    project_root = ctx.obj['project_root']
+    config = ctx.obj['config']
+    verbose = ctx.obj['verbose']
+    
+    rewind_dir = project_root / ".claude-rewind"
+    if not rewind_dir.exists():
+        click.echo("Claude Rewind not initialized in this project.", err=True)
+        click.echo("Run 'claude-rewind init' first.")
+        sys.exit(1)
+    
+    snapshots_dir = rewind_dir / "snapshots"
+    if not snapshots_dir.exists():
+        click.echo("No snapshots directory found.")
+        return
+    
+    # Get cleanup configuration
+    storage_config = config.get('storage', {})
+    max_snapshots = storage_config.get('max_snapshots', 100)
+    cleanup_after_days = storage_config.get('cleanup_after_days', 30)
+    
+    if dry_run:
+        click.echo(f"Dry run: Would clean up snapshots older than {cleanup_after_days} days")
+        click.echo(f"Dry run: Would keep maximum of {max_snapshots} snapshots")
+        click.echo("Note: Actual cleanup logic will be implemented in storage tasks")
+    else:
+        if not force:
+            if not click.confirm(f"Clean up snapshots older than {cleanup_after_days} days?"):
+                click.echo("Cleanup cancelled.")
+                return
+        
+        click.echo("Cleanup functionality will be fully implemented in storage tasks")
+        if verbose:
+            click.echo(f"Configuration: max_snapshots={max_snapshots}, cleanup_after_days={cleanup_after_days}")
+
+
+@cli.command()
+@click.pass_context
+def config(ctx: click.Context):
+    """Show current configuration."""
+    config_data = ctx.obj['config']
+    config_manager = ctx.obj['config_manager']
+    
+    click.echo(f"Configuration file: {config_manager.get_config_path()}")
+    click.echo("Current configuration:")
+    click.echo("=" * 50)
+    
+    # Display storage config
+    storage = config_data.get('storage', {})
+    click.echo("Storage:")
+    click.echo(f"  Max snapshots: {storage.get('max_snapshots', 'N/A')}")
+    click.echo(f"  Compression: {'Enabled' if storage.get('compression_enabled') else 'Disabled'}")
+    click.echo(f"  Cleanup after: {storage.get('cleanup_after_days', 'N/A')} days")
+    click.echo(f"  Max disk usage: {storage.get('max_disk_usage_mb', 'N/A')} MB")
+    
+    # Display display config
+    display = config_data.get('display', {})
+    click.echo("\nDisplay:")
+    click.echo(f"  Theme: {display.get('theme', 'N/A')}")
+    click.echo(f"  Diff algorithm: {display.get('diff_algorithm', 'N/A')}")
+    click.echo(f"  Show line numbers: {display.get('show_line_numbers', 'N/A')}")
+    click.echo(f"  Context lines: {display.get('context_lines', 'N/A')}")
+    
+    # Display git integration
+    git_config = config_data.get('git_integration', {})
+    click.echo("\nGit Integration:")
+    click.echo(f"  Respect .gitignore: {git_config.get('respect_gitignore', 'N/A')}")
+    click.echo(f"  Auto commit rollbacks: {git_config.get('auto_commit_rollbacks', 'N/A')}")
+
+
+@cli.command()
+@click.option('--validate-only', is_flag=True, help='Only validate configuration without showing details')
+@click.pass_context
+def validate(ctx: click.Context, validate_only: bool):
+    """Validate the current configuration."""
+    config_data = ctx.obj['config']
+    config_manager = ctx.obj['config_manager']
+    
+    validation_errors = config_manager.validate_config(config_data)
+    
+    if validation_errors:
+        click.echo("Configuration validation failed:", err=True)
+        for error in validation_errors:
+            click.echo(f"  ✗ {error}", err=True)
+        sys.exit(1)
+    else:
+        click.echo("✓ Configuration is valid")
+        if not validate_only:
+            click.echo(f"Configuration file: {config_manager.get_config_path()}")
+            click.echo("All configuration values are within acceptable ranges.")
 
 
 if __name__ == '__main__':
