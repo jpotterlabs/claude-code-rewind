@@ -79,10 +79,12 @@ class TestInitCommand:
             assert 'Initializing Claude Rewind' in result.output
             assert 'initialized successfully' in result.output
             
-            # Check that directories were created
+            # Check that directories and files were created
             assert Path('.claude-rewind').exists()
             assert Path('.claude-rewind/snapshots').exists()
             assert Path('.claude-rewind/config.yml').exists()
+            assert Path('.claude-rewind/metadata.db').exists()
+            assert Path('.claude-rewind/status.json').exists()
     
     def test_init_command_with_custom_root(self):
         """Test init command with custom project root."""
@@ -94,6 +96,8 @@ class TestInitCommand:
         assert rewind_dir.exists()
         assert (rewind_dir / 'snapshots').exists()
         assert (rewind_dir / 'config.yml').exists()
+        assert (rewind_dir / 'metadata.db').exists()
+        assert (rewind_dir / 'status.json').exists()
     
     def test_init_command_already_initialized(self):
         """Test init command when already initialized."""
@@ -102,9 +106,22 @@ class TestInitCommand:
             result1 = self.runner.invoke(cli, ['init'])
             assert result1.exit_code == 0
             
-            # Initialize again - should still work (idempotent)
+            # Initialize again - should show already initialized message
             result2 = self.runner.invoke(cli, ['init'])
             assert result2.exit_code == 0
+            assert 'already initialized' in result2.output
+    
+    def test_init_command_force_reinitialize(self):
+        """Test init command with force flag to reinitialize."""
+        with self.runner.isolated_filesystem():
+            # Initialize once
+            result1 = self.runner.invoke(cli, ['init'])
+            assert result1.exit_code == 0
+            
+            # Force reinitialize
+            result2 = self.runner.invoke(cli, ['init', '--force'])
+            assert result2.exit_code == 0
+            assert 'initialized successfully' in result2.output
     
     def test_init_creates_valid_config(self):
         """Test that init creates a valid configuration file."""
@@ -117,6 +134,122 @@ class TestInitCommand:
             config_data = config_manager.load_config()
             validation_errors = config_manager.validate_config(config_data)
             assert len(validation_errors) == 0
+    
+    def test_init_creates_database(self):
+        """Test that init creates and initializes the database."""
+        with self.runner.isolated_filesystem():
+            result = self.runner.invoke(cli, ['init'])
+            assert result.exit_code == 0
+            assert 'Initialized database' in result.output
+            
+            # Check database file exists
+            db_path = Path('.claude-rewind/metadata.db')
+            assert db_path.exists()
+            
+            # Verify database has correct tables
+            import sqlite3
+            conn = sqlite3.connect(str(db_path))
+            cursor = conn.cursor()
+            
+            # Check snapshots table exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='snapshots'")
+            assert cursor.fetchone() is not None
+            
+            # Check file_changes table exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='file_changes'")
+            assert cursor.fetchone() is not None
+            
+            conn.close()
+    
+    def test_init_creates_status_file(self):
+        """Test that init creates a status file with correct information."""
+        with self.runner.isolated_filesystem():
+            result = self.runner.invoke(cli, ['init'])
+            assert result.exit_code == 0
+            
+            # Check status file exists and has correct content
+            status_file = Path('.claude-rewind/status.json')
+            assert status_file.exists()
+            
+            import json
+            with open(status_file) as f:
+                status_data = json.load(f)
+            
+            assert 'initialized_at' in status_data
+            assert 'version' in status_data
+            assert 'project_root' in status_data
+            assert 'git_integration' in status_data
+    
+    def test_init_verbose_mode(self):
+        """Test init command with verbose flag."""
+        with self.runner.isolated_filesystem():
+            result = self.runner.invoke(cli, ['--verbose', 'init'])
+            assert result.exit_code == 0
+            assert 'Created directory:' in result.output
+            assert 'Created snapshots directory:' in result.output
+            assert 'Created snapshots table' in result.output
+    
+    def test_init_skip_git_check(self):
+        """Test init command with skip git check flag."""
+        with self.runner.isolated_filesystem():
+            result = self.runner.invoke(cli, ['init', '--skip-git-check'])
+            assert result.exit_code == 0
+            assert 'initialized successfully' in result.output
+            
+            # Check status file reflects git integration was skipped
+            status_file = Path('.claude-rewind/status.json')
+            import json
+            with open(status_file) as f:
+                status_data = json.load(f)
+            assert status_data['git_integration'] is False
+    
+    @patch('git.Repo')
+    def test_init_with_git_repository(self, mock_repo):
+        """Test init command in a git repository."""
+        with self.runner.isolated_filesystem():
+            # Mock git repository
+            mock_repo_instance = MagicMock()
+            mock_repo_instance.working_dir = str(Path.cwd())
+            mock_repo.return_value = mock_repo_instance
+            
+            result = self.runner.invoke(cli, ['--verbose', 'init'])
+            assert result.exit_code == 0
+            assert 'Detected git repository' in result.output
+            assert 'Created .gitignore' in result.output or 'Added .claude-rewind/ to .gitignore' in result.output
+    
+    @patch('git.Repo')
+    def test_init_with_existing_gitignore(self, mock_repo):
+        """Test init command with existing .gitignore file."""
+        with self.runner.isolated_filesystem():
+            # Create existing .gitignore
+            with open('.gitignore', 'w') as f:
+                f.write("*.pyc\n__pycache__/\n")
+            
+            # Mock git repository
+            mock_repo_instance = MagicMock()
+            mock_repo_instance.working_dir = str(Path.cwd())
+            mock_repo.return_value = mock_repo_instance
+            
+            result = self.runner.invoke(cli, ['init'])
+            assert result.exit_code == 0
+            assert 'Added .claude-rewind/ to .gitignore' in result.output
+            
+            # Check .gitignore was updated
+            with open('.gitignore') as f:
+                content = f.read()
+            assert '.claude-rewind/' in content
+    
+    @patch('git.Repo')
+    def test_init_git_repository_error(self, mock_repo):
+        """Test init command handles git repository errors gracefully."""
+        with self.runner.isolated_filesystem():
+            # Mock git repository error
+            mock_repo.side_effect = Exception("Git error")
+            
+            result = self.runner.invoke(cli, ['--verbose', 'init'])
+            assert result.exit_code == 0  # Should still succeed
+            assert 'Git integration warning' in result.output
+            assert 'initialized successfully' in result.output
 
 
 class TestStatusCommand:

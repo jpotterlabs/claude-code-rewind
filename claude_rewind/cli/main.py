@@ -4,6 +4,7 @@ import click
 import sys
 from pathlib import Path
 from typing import Optional
+from datetime import datetime
 
 from ..core.config import ConfigManager
 
@@ -51,17 +52,31 @@ def cli(ctx: click.Context, config: Optional[str], project_root: Optional[str], 
 
 
 @cli.command()
+@click.option('--force', is_flag=True, help='Force initialization even if already initialized')
+@click.option('--skip-git-check', is_flag=True, help='Skip git repository detection and .gitignore setup')
 @click.pass_context
-def init(ctx: click.Context):
+def init(ctx: click.Context, force: bool, skip_git_check: bool):
     """Initialize Claude Rewind in the current project."""
+    from ..storage.database import DatabaseManager
+    import git
+    
     project_root = ctx.obj['project_root']
     config_manager = ctx.obj['config_manager']
+    verbose = ctx.obj['verbose']
     
     click.echo(f"Initializing Claude Rewind in {project_root}")
     
-    # Create .claude-rewind directory
+    # Check if already initialized
     rewind_dir = project_root / ".claude-rewind"
+    if rewind_dir.exists() and not force:
+        click.echo("Claude Rewind is already initialized in this project.")
+        click.echo("Use --force to reinitialize.")
+        return
+    
+    # Create .claude-rewind directory
     rewind_dir.mkdir(exist_ok=True)
+    if verbose:
+        click.echo(f"✓ Created directory: {rewind_dir}")
     
     # Create default configuration
     if config_manager.create_default_config_file():
@@ -73,9 +88,82 @@ def init(ctx: click.Context):
     # Create snapshots directory
     snapshots_dir = rewind_dir / "snapshots"
     snapshots_dir.mkdir(exist_ok=True)
-    click.echo(f"✓ Created snapshots directory: {snapshots_dir}")
+    if verbose:
+        click.echo(f"✓ Created snapshots directory: {snapshots_dir}")
     
-    click.echo("Claude Rewind initialized successfully!")
+    # Initialize database
+    try:
+        db_path = rewind_dir / "metadata.db"
+        db_manager = DatabaseManager(db_path)
+        click.echo(f"✓ Initialized database: {db_path}")
+        if verbose:
+            click.echo("  - Created snapshots table")
+            click.echo("  - Created file_changes table")
+            click.echo("  - Created indexes for performance")
+    except Exception as e:
+        click.echo(f"✗ Failed to initialize database: {e}", err=True)
+        return
+    
+    # Git integration setup
+    if not skip_git_check:
+        try:
+            # Check if we're in a git repository
+            repo = git.Repo(project_root, search_parent_directories=True)
+            git_root = Path(repo.working_dir)
+            
+            if verbose:
+                click.echo(f"✓ Detected git repository at: {git_root}")
+            
+            # Check if .gitignore exists and add .claude-rewind if needed
+            gitignore_path = git_root / ".gitignore"
+            gitignore_entry = ".claude-rewind/"
+            
+            if gitignore_path.exists():
+                gitignore_content = gitignore_path.read_text()
+                if gitignore_entry not in gitignore_content:
+                    with open(gitignore_path, 'a') as f:
+                        f.write(f"\n# Claude Rewind Tool\n{gitignore_entry}\n")
+                    click.echo("✓ Added .claude-rewind/ to .gitignore")
+                else:
+                    if verbose:
+                        click.echo("✓ .claude-rewind/ already in .gitignore")
+            else:
+                # Create .gitignore with .claude-rewind entry
+                with open(gitignore_path, 'w') as f:
+                    f.write(f"# Claude Rewind Tool\n{gitignore_entry}\n")
+                click.echo("✓ Created .gitignore with .claude-rewind/ entry")
+                
+        except git.InvalidGitRepositoryError:
+            if verbose:
+                click.echo("ℹ No git repository detected - skipping git integration")
+        except Exception as e:
+            click.echo(f"⚠ Git integration warning: {e}")
+            if verbose:
+                click.echo("  Continuing without git integration...")
+    
+    # Create initial status file
+    status_file = rewind_dir / "status.json"
+    import json
+    status_data = {
+        "initialized_at": datetime.now().isoformat(),
+        "version": "0.1.0",
+        "project_root": str(project_root),
+        "git_integration": not skip_git_check
+    }
+    
+    try:
+        with open(status_file, 'w') as f:
+            json.dump(status_data, f, indent=2)
+        if verbose:
+            click.echo(f"✓ Created status file: {status_file}")
+    except Exception as e:
+        click.echo(f"⚠ Warning: Could not create status file: {e}")
+    
+    click.echo("\n🎉 Claude Rewind initialized successfully!")
+    click.echo("\nNext steps:")
+    click.echo("  • Run 'claude-rewind status' to verify the setup")
+    click.echo("  • Start using Claude Code - snapshots will be created automatically")
+    click.echo("  • Use 'claude-rewind timeline' to view your action history")
 
 
 @cli.command()

@@ -41,7 +41,7 @@
     - Write performance tests to validate speed requirements
     - _Requirements: 1.3, 7.2_
 
-- [-] 4. Create CLI command framework
+- [x] 4. Create CLI command framework
 
   - [x] 4.1 Set up Click-based CLI structure
 
@@ -51,7 +51,7 @@
     - Write integration tests for CLI initialization
     - _Requirements: 6.1, 6.2, 6.7_
 
-  - [ ] 4.2 Implement project initialization
+  - [x] 4.2 Implement project initialization
     - Create `claude-rewind init` command functionality
     - Set up .claude-rewind directory structure
     - Initialize database and configuration files
