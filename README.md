@@ -8,6 +8,8 @@
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776ab.svg?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-Compatible-6366f1.svg?style=for-the-badge)](https://claude.ai/code)
 
+<img width="683" height="451" alt="image" src="https://github.com/user-attachments/assets/48b2e347-7922-4b04-a8f8-3a9d7a263555" />
+
 </div>
 
 ---
