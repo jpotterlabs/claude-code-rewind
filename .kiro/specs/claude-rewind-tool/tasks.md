@@ -26,7 +26,7 @@
 
 - [ ] 3. Build snapshot capture engine
 
-  - [ ] 3.1 Implement core snapshot creation logic
+  - [x] 3.1 Implement core snapshot creation logic
 
     - Write SnapshotEngine class with incremental capture capability
     - Implement file change detection and content hashing
