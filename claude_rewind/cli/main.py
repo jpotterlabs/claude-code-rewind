@@ -391,5 +391,346 @@ def timeline(ctx: click.Context, filter_action: Optional[str], filter_date: Opti
         sys.exit(1)
 
 
+@cli.command()
+@click.argument('snapshot_id', required=False)
+@click.option('--file', '-f', type=str, help='Show diff for specific file only')
+@click.option('--format', '-F', type=click.Choice(['unified', 'side-by-side', 'patch']), 
+              default='unified', help='Diff output format')
+@click.option('--before', type=str, help='Compare with specific snapshot (for file diffs)')
+@click.option('--after', type=str, help='Compare with specific snapshot (for file diffs)')
+@click.option('--context', '-C', type=int, default=3, help='Number of context lines')
+@click.option('--no-color', is_flag=True, help='Disable syntax highlighting and colors')
+@click.option('--export', type=click.Path(), help='Export diff to file')
+@click.option('--interactive', '-i', is_flag=True, help='Interactive diff viewer')
+@click.pass_context
+def diff(ctx: click.Context, snapshot_id: Optional[str], file: Optional[str], 
+         format: str, before: Optional[str], after: Optional[str], 
+         context: int, no_color: bool, export: Optional[str], interactive: bool):
+    """Show diff for snapshot or between snapshots."""
+    from ..core.diff_viewer import DiffViewer
+    from ..core.models import DiffFormat
+    from ..storage.database import DatabaseManager
+    from ..storage.file_store import FileStore
+    from pathlib import Path
+    
+    project_root = ctx.obj['project_root']
+    verbose = ctx.obj['verbose']
+    
+    # Check if project is initialized
+    rewind_dir = project_root / ".claude-rewind"
+    if not rewind_dir.exists():
+        click.echo("Claude Rewind is not initialized in this project.", err=True)
+        click.echo("Run 'claude-rewind init' first.")
+        sys.exit(1)
+    
+    try:
+        # Initialize storage components
+        db_manager = DatabaseManager(rewind_dir / "metadata.db")
+        file_store = FileStore(rewind_dir)
+        
+        # Create storage manager wrapper
+        class StorageManagerWrapper:
+            def __init__(self, db_manager, file_store):
+                self.db_manager = db_manager
+                self.file_store = file_store
+            
+            def load_snapshot(self, snapshot_id):
+                # Get snapshot metadata from database
+                snapshots = self.db_manager.get_snapshots(limit=1000)  # Get all to find by ID
+                snapshot_metadata = None
+                for s in snapshots:
+                    if s.id == snapshot_id:
+                        snapshot_metadata = s
+                        break
+                
+                if not snapshot_metadata:
+                    return None
+                
+                # Get file states from file store
+                try:
+                    manifest = self.file_store.get_snapshot_manifest(snapshot_id)
+                    file_states = {}
+                    
+                    for file_path_str, file_info in manifest['files'].items():
+                        from ..core.models import FileState
+                        from datetime import datetime
+                        
+                        file_path = Path(file_path_str)
+                        file_state = FileState(
+                            path=file_path,
+                            content_hash=file_info.get('content_hash', ''),
+                            size=file_info.get('size', 0),
+                            modified_time=datetime.fromisoformat(file_info.get('modified_time', datetime.now().isoformat())),
+                            permissions=file_info.get('permissions', 0o644),
+                            exists=file_info.get('exists', True)
+                        )
+                        file_states[file_path] = file_state
+                    
+                    from ..core.models import Snapshot
+                    return Snapshot(
+                        id=snapshot_id,
+                        timestamp=snapshot_metadata.timestamp,
+                        metadata=snapshot_metadata,
+                        file_states=file_states
+                    )
+                except Exception as e:
+                    if verbose:
+                        click.echo(f"Error loading snapshot files: {e}", err=True)
+                    return None
+            
+            def load_file_content(self, content_hash):
+                try:
+                    return self.file_store.retrieve_content(content_hash)
+                except Exception:
+                    return None
+        
+        storage_manager = StorageManagerWrapper(db_manager, file_store)
+        
+        # Create diff viewer
+        diff_viewer = DiffViewer(
+            storage_manager=storage_manager,
+            context_lines=context,
+            enable_colors=not no_color
+        )
+        
+        # Convert format string to enum
+        format_map = {
+            'unified': DiffFormat.UNIFIED,
+            'side-by-side': DiffFormat.SIDE_BY_SIDE,
+            'patch': DiffFormat.PATCH
+        }
+        diff_format = format_map[format]
+        
+        # Handle different diff scenarios
+        if file and before and after:
+            # File diff between two snapshots
+            diff_output = diff_viewer.show_file_diff(
+                Path(file), before, after, diff_format
+            )
+        elif file and snapshot_id:
+            # File diff between snapshot and current
+            diff_output = diff_viewer.show_file_diff(
+                Path(file), snapshot_id, "current", diff_format
+            )
+        elif snapshot_id:
+            # Snapshot diff against current state
+            if interactive:
+                # Launch interactive diff viewer
+                _show_interactive_diff(diff_viewer, snapshot_id, no_color)
+                return
+            else:
+                diff_output = diff_viewer.show_snapshot_diff(snapshot_id, diff_format)
+        else:
+            # No snapshot specified - show help or recent snapshots
+            click.echo("No snapshot specified. Recent snapshots:")
+            snapshots = db_manager.get_snapshots(limit=10)
+            if not snapshots:
+                click.echo("No snapshots found.")
+                return
+            
+            for i, snapshot in enumerate(snapshots, 1):
+                timestamp_str = snapshot.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                click.echo(f"{i:2d}. {snapshot.id} | {timestamp_str} | {snapshot.action_type}")
+            
+            click.echo("\nUse: claude-rewind diff <snapshot-id>")
+            return
+        
+        # Output or export diff
+        if export:
+            # Export to file (disable colors for clean output)
+            export_diff = diff_viewer.export_diff(snapshot_id, diff_format)
+            Path(export).write_text(export_diff)
+            click.echo(f"Diff exported to: {export}")
+        else:
+            # Display to terminal
+            click.echo(diff_output)
+    
+    except Exception as e:
+        click.echo(f"Error generating diff: {e}", err=True)
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+
+
+def _show_interactive_diff(diff_viewer, snapshot_id: str, no_color: bool):
+    """Show interactive diff viewer using Rich."""
+    try:
+        from rich.console import Console
+        from rich.panel import Panel
+        from rich.text import Text
+        from rich.layout import Layout
+        from rich.live import Live
+        from rich.table import Table
+        import keyboard
+        import threading
+        import time
+    except ImportError:
+        click.echo("Interactive mode requires 'rich' and 'keyboard' packages.", err=True)
+        click.echo("Install with: pip install rich keyboard")
+        sys.exit(1)
+    
+    console = Console()
+    
+    # Get file changes for the snapshot
+    try:
+        file_changes = diff_viewer.get_file_changes(snapshot_id)
+        if not file_changes:
+            console.print("[yellow]No changes found in this snapshot.[/yellow]")
+            return
+    except Exception as e:
+        console.print(f"[red]Error loading snapshot: {e}[/red]")
+        return
+    
+    # Interactive state
+    current_file_index = 0
+    scroll_position = 0
+    show_help = False
+    
+    def create_layout():
+        """Create the Rich layout for interactive diff viewer."""
+        layout = Layout()
+        
+        # Split into header, main content, and footer
+        layout.split_column(
+            Layout(name="header", size=3),
+            Layout(name="main"),
+            Layout(name="footer", size=3)
+        )
+        
+        # Header with snapshot info
+        header_text = f"Snapshot: {snapshot_id} | File {current_file_index + 1}/{len(file_changes)}"
+        if len(file_changes) > 0:
+            current_file = file_changes[current_file_index]
+            header_text += f" | {current_file.path} ({current_file.change_type.value})"
+        
+        layout["header"].update(Panel(header_text, style="bold blue"))
+        
+        # Main content area
+        if show_help:
+            help_text = """
+[bold]Interactive Diff Viewer - Keyboard Shortcuts[/bold]
+
+[cyan]Navigation:[/cyan]
+  ↑/k     - Previous file
+  ↓/j     - Next file
+  ←/h     - Scroll up
+  →/l     - Scroll down
+  Home    - First file
+  End     - Last file
+
+[cyan]Actions:[/cyan]
+  Enter   - Show full diff for current file
+  Space   - Toggle between unified/side-by-side view
+  e       - Export current file diff
+  
+[cyan]Other:[/cyan]
+  ?       - Toggle this help
+  q/Esc   - Quit
+
+Press any key to continue...
+            """
+            layout["main"].update(Panel(help_text, title="Help"))
+        else:
+            # Show diff for current file
+            if len(file_changes) > 0:
+                current_file = file_changes[current_file_index]
+                try:
+                    # Get diff for current file
+                    diff_text = diff_viewer.show_file_diff(
+                        current_file.path, snapshot_id, "current"
+                    )
+                    
+                    # Split into lines and apply scrolling
+                    diff_lines = diff_text.split('\n')
+                    visible_lines = diff_lines[scroll_position:scroll_position + 20]  # Show 20 lines
+                    
+                    content = '\n'.join(visible_lines)
+                    if scroll_position > 0:
+                        content = f"... (scrolled {scroll_position} lines)\n" + content
+                    if len(diff_lines) > scroll_position + 20:
+                        content += f"\n... ({len(diff_lines) - scroll_position - 20} more lines)"
+                    
+                    layout["main"].update(Panel(content, title=f"Diff: {current_file.path}"))
+                except Exception as e:
+                    layout["main"].update(Panel(f"Error loading diff: {e}", style="red"))
+            else:
+                layout["main"].update(Panel("No files to display", style="yellow"))
+        
+        # Footer with controls
+        footer_text = "↑↓: Navigate files | ←→: Scroll | Enter: Full diff | Space: Toggle view | ?: Help | q: Quit"
+        layout["footer"].update(Panel(footer_text, style="dim"))
+        
+        return layout
+    
+    # Keyboard event handler
+    def on_key_event(event):
+        nonlocal current_file_index, scroll_position, show_help
+        
+        if event.event_type == keyboard.KEY_DOWN:
+            key = event.name
+            
+            if key in ['q', 'esc']:
+                return False  # Exit
+            elif key == '?':
+                show_help = not show_help
+            elif key in ['up', 'k'] and not show_help:
+                current_file_index = max(0, current_file_index - 1)
+                scroll_position = 0
+            elif key in ['down', 'j'] and not show_help:
+                current_file_index = min(len(file_changes) - 1, current_file_index + 1)
+                scroll_position = 0
+            elif key in ['left', 'h'] and not show_help:
+                scroll_position = max(0, scroll_position - 5)
+            elif key in ['right', 'l'] and not show_help:
+                scroll_position += 5
+            elif key == 'home' and not show_help:
+                current_file_index = 0
+                scroll_position = 0
+            elif key == 'end' and not show_help:
+                current_file_index = len(file_changes) - 1
+                scroll_position = 0
+            elif key == 'enter' and not show_help and len(file_changes) > 0:
+                # Show full diff in pager
+                current_file = file_changes[current_file_index]
+                full_diff = diff_viewer.show_file_diff(
+                    current_file.path, snapshot_id, "current"
+                )
+                console.print(f"\n[bold]Full diff for {current_file.path}:[/bold]")
+                console.print(full_diff)
+                console.input("\nPress Enter to continue...")
+            elif show_help:
+                show_help = False  # Any key exits help
+        
+        return True  # Continue
+    
+    # Start keyboard listener in separate thread
+    keyboard_active = True
+    
+    def keyboard_listener():
+        while keyboard_active:
+            try:
+                event = keyboard.read_event()
+                if not on_key_event(event):
+                    break
+            except:
+                break
+    
+    keyboard_thread = threading.Thread(target=keyboard_listener, daemon=True)
+    keyboard_thread.start()
+    
+    # Main display loop
+    try:
+        with Live(create_layout(), refresh_per_second=10, screen=True) as live:
+            while keyboard_active:
+                live.update(create_layout())
+                time.sleep(0.1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        keyboard_active = False
+        console.print("\n[dim]Exiting interactive diff viewer...[/dim]")
+
+
 if __name__ == '__main__':
     cli()

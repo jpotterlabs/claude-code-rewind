@@ -76,9 +76,9 @@
     - Write tests for bookmark operations and search functionality
     - _Requirements: 4.4, 8.4_
 
-- [ ] 6. Implement diff viewing system
+- [x] 6. Implement diff viewing system
 
-  - [ ] 6.1 Create core diff engine
+  - [x] 6.1 Create core diff engine
 
     - Implement DiffViewer class with multiple output formats
     - Add syntax highlighting using Pygments
@@ -86,7 +86,7 @@
     - Write unit tests for diff generation and formatting
     - _Requirements: 3.1, 3.2, 3.3_
 
-  - [ ] 6.2 Build interactive diff viewer
+  - [x] 6.2 Build interactive diff viewer
     - Implement `claude-rewind diff` command with Rich terminal UI
     - Add line-by-line annotations and context display
     - Create scrollable diff viewer for large changes
