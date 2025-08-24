@@ -59,9 +59,9 @@
     - Write tests for project initialization in various scenarios
     - _Requirements: 5.4, 6.1_
 
-- [ ] 5. Build timeline and history management
+- [-] 5. Build timeline and history management
 
-  - [ ] 5.1 Implement timeline display functionality
+  - [x] 5.1 Implement timeline display functionality
 
     - Create TimelineManager class with filtering capabilities
     - Implement `claude-rewind timeline` command with Rich terminal UI
@@ -69,7 +69,7 @@
     - Write unit tests for timeline operations and filtering
     - _Requirements: 4.1, 4.2, 4.3, 6.3_
 
-  - [ ] 5.2 Add bookmark and metadata features
+  - [x] 5.2 Add bookmark and metadata features
     - Implement snapshot bookmarking functionality
     - Add metadata search capabilities
     - Create interactive timeline navigation with keyboard shortcuts

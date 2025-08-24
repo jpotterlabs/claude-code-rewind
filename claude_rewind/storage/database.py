@@ -110,6 +110,25 @@ class DatabaseManager:
             ON file_changes(file_path)
         """)
         
+        # Create bookmarks table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS bookmarks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY (snapshot_id) REFERENCES snapshots(id) ON DELETE CASCADE,
+                UNIQUE(snapshot_id)
+            )
+        """)
+        
+        # Create index for bookmark lookups
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_bookmarks_snapshot 
+            ON bookmarks(snapshot_id)
+        """)
+        
         # Create schema_info table for migrations
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS schema_info (
@@ -372,6 +391,199 @@ class DatabaseManager:
             logger.info(f"Cleaned up {deleted_count} old snapshots")
             return deleted_count
     
+    def add_bookmark(self, snapshot_id: str, name: str, description: Optional[str] = None) -> bool:
+        """Add a bookmark to a snapshot.
+        
+        Args:
+            snapshot_id: Snapshot identifier
+            name: Bookmark name
+            description: Optional bookmark description
+            
+        Returns:
+            True if bookmark was added successfully
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            now = int(datetime.now().timestamp())
+            
+            try:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO bookmarks (snapshot_id, name, description, created_at)
+                    VALUES (?, ?, ?, ?)
+                """, (snapshot_id, name, description, now))
+                
+                conn.commit()
+                logger.debug(f"Added bookmark '{name}' to snapshot {snapshot_id}")
+                return True
+                
+            except sqlite3.Error as e:
+                logger.error(f"Error adding bookmark: {e}")
+                return False
+    
+    def remove_bookmark(self, snapshot_id: str) -> bool:
+        """Remove bookmark from a snapshot.
+        
+        Args:
+            snapshot_id: Snapshot identifier
+            
+        Returns:
+            True if bookmark was removed successfully
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute("DELETE FROM bookmarks WHERE snapshot_id = ?", (snapshot_id,))
+            removed = cursor.rowcount > 0
+            
+            conn.commit()
+            
+            if removed:
+                logger.debug(f"Removed bookmark from snapshot {snapshot_id}")
+            
+            return removed
+    
+    def get_bookmark(self, snapshot_id: str) -> Optional[Tuple[str, Optional[str]]]:
+        """Get bookmark for a snapshot.
+        
+        Args:
+            snapshot_id: Snapshot identifier
+            
+        Returns:
+            Tuple of (name, description) if bookmark exists, None otherwise
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT name, description FROM bookmarks WHERE snapshot_id = ?
+            """, (snapshot_id,))
+            
+            row = cursor.fetchone()
+            return (row['name'], row['description']) if row else None
+    
+    def list_bookmarks(self) -> List[Tuple[str, str, Optional[str], datetime]]:
+        """List all bookmarks.
+        
+        Returns:
+            List of tuples: (snapshot_id, name, description, created_at)
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT snapshot_id, name, description, created_at 
+                FROM bookmarks 
+                ORDER BY created_at DESC
+            """)
+            
+            rows = cursor.fetchall()
+            
+            return [
+                (row['snapshot_id'], row['name'], row['description'], 
+                 datetime.fromtimestamp(row['created_at']))
+                for row in rows
+            ]
+    
+    def search_snapshots_by_metadata(self, query: str) -> List[SnapshotMetadata]:
+        """Search snapshots by metadata content.
+        
+        Args:
+            query: Search query string
+            
+        Returns:
+            List of matching snapshot metadata
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Search in snapshot metadata and bookmark names/descriptions
+            search_pattern = f"%{query}%"
+            
+            cursor.execute("""
+                SELECT DISTINCT s.id, s.timestamp, s.action_type, s.prompt_context,
+                       s.files_affected, s.total_size, s.compression_ratio,
+                       s.parent_snapshot
+                FROM snapshots s
+                LEFT JOIN bookmarks b ON s.id = b.snapshot_id
+                WHERE s.prompt_context LIKE ? COLLATE NOCASE
+                   OR s.action_type LIKE ? COLLATE NOCASE
+                   OR s.id LIKE ? COLLATE NOCASE
+                   OR b.name LIKE ? COLLATE NOCASE
+                   OR b.description LIKE ? COLLATE NOCASE
+                ORDER BY s.timestamp DESC
+            """, (search_pattern, search_pattern, search_pattern, search_pattern, search_pattern))
+            
+            rows = cursor.fetchall()
+            
+            return [
+                SnapshotMetadata(
+                    id=row['id'],
+                    timestamp=datetime.fromtimestamp(row['timestamp']),
+                    action_type=row['action_type'],
+                    prompt_context=row['prompt_context'],
+                    files_affected=[],  # Will be populated separately if needed
+                    total_size=row['total_size'],
+                    compression_ratio=row['compression_ratio'],
+                    parent_snapshot=row['parent_snapshot']
+                )
+                for row in rows
+            ]
+    
+    def get_snapshots_with_bookmarks(self, limit: Optional[int] = None, 
+                                   offset: int = 0) -> List[Tuple[SnapshotMetadata, Optional[Tuple[str, Optional[str]]]]]:
+        """Get snapshots with their bookmark information.
+        
+        Args:
+            limit: Maximum number of snapshots to return
+            offset: Number of snapshots to skip
+            
+        Returns:
+            List of tuples: (snapshot_metadata, bookmark_info)
+            bookmark_info is (name, description) tuple or None
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            query = """
+                SELECT s.id, s.timestamp, s.action_type, s.prompt_context,
+                       s.files_affected, s.total_size, s.compression_ratio,
+                       s.parent_snapshot, b.name as bookmark_name, b.description as bookmark_desc
+                FROM snapshots s
+                LEFT JOIN bookmarks b ON s.id = b.snapshot_id
+                ORDER BY s.timestamp DESC
+            """
+            
+            params = []
+            if limit is not None:
+                query += " LIMIT ?"
+                params.append(limit)
+                if offset > 0:
+                    query += " OFFSET ?"
+                    params.append(offset)
+            
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            
+            result = []
+            for row in rows:
+                snapshot = SnapshotMetadata(
+                    id=row['id'],
+                    timestamp=datetime.fromtimestamp(row['timestamp']),
+                    action_type=row['action_type'],
+                    prompt_context=row['prompt_context'],
+                    files_affected=[],
+                    total_size=row['total_size'],
+                    compression_ratio=row['compression_ratio'],
+                    parent_snapshot=row['parent_snapshot']
+                )
+                
+                bookmark_info = None
+                if row['bookmark_name']:
+                    bookmark_info = (row['bookmark_name'], row['bookmark_desc'])
+                
+                result.append((snapshot, bookmark_info))
+            
+            return result
+    
     def get_storage_stats(self) -> Dict[str, Any]:
         """Get database storage statistics.
         
@@ -389,6 +601,10 @@ class DatabaseManager:
             cursor.execute("SELECT COUNT(*) FROM file_changes")
             file_change_count = cursor.fetchone()[0]
             
+            # Get bookmark count
+            cursor.execute("SELECT COUNT(*) FROM bookmarks")
+            bookmark_count = cursor.fetchone()[0]
+            
             # Get total size
             cursor.execute("SELECT SUM(total_size) FROM snapshots")
             total_size = cursor.fetchone()[0] or 0
@@ -399,6 +615,7 @@ class DatabaseManager:
             return {
                 'snapshot_count': snapshot_count,
                 'file_change_count': file_change_count,
+                'bookmark_count': bookmark_count,
                 'total_content_size': total_size,
                 'database_size': db_size,
                 'schema_version': self.get_schema_version()

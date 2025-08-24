@@ -289,5 +289,107 @@ def validate(ctx: click.Context, validate_only: bool):
             click.echo("All configuration values are within acceptable ranges.")
 
 
+@cli.command()
+@click.option('--filter-action', type=str, help='Filter by action type')
+@click.option('--filter-date', type=str, help='Filter by date (YYYY-MM-DD)')
+@click.option('--search', type=str, help='Search snapshots by content')
+@click.option('--bookmarked-only', is_flag=True, help='Show only bookmarked snapshots')
+@click.option('--limit', type=int, default=50, help='Maximum number of snapshots to show')
+@click.pass_context
+def timeline(ctx: click.Context, filter_action: Optional[str], filter_date: Optional[str], 
+            search: Optional[str], bookmarked_only: bool, limit: int):
+    """Display interactive timeline of Claude Code actions."""
+    from ..storage.database import DatabaseManager
+    from ..core.timeline import TimelineManager
+    from ..core.models import TimelineFilters
+    from datetime import datetime
+    
+    project_root = ctx.obj['project_root']
+    verbose = ctx.obj['verbose']
+    
+    # Check if initialized
+    rewind_dir = project_root / ".claude-rewind"
+    if not rewind_dir.exists():
+        click.echo("Claude Rewind not initialized in this project.", err=True)
+        click.echo("Run 'claude-rewind init' first.")
+        sys.exit(1)
+    
+    # Initialize database manager
+    try:
+        db_path = rewind_dir / "metadata.db"
+        db_manager = DatabaseManager(db_path)
+    except Exception as e:
+        click.echo(f"Error accessing database: {e}", err=True)
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+    
+    # Initialize timeline manager
+    timeline_manager = TimelineManager(db_manager)
+    
+    # If no options provided, show interactive timeline
+    if not any([filter_action, filter_date, search, bookmarked_only]):
+        timeline_manager.show_interactive_timeline()
+        return
+    
+    # Apply command-line filters
+    filters = TimelineFilters()
+    
+    if filter_action:
+        filters.action_types = [filter_action]
+    
+    if filter_date:
+        try:
+            date_obj = datetime.strptime(filter_date, "%Y-%m-%d")
+            # Filter for the entire day
+            end_date = date_obj.replace(hour=23, minute=59, second=59)
+            filters.date_range = (date_obj, end_date)
+        except ValueError:
+            click.echo(f"Invalid date format: {filter_date}. Use YYYY-MM-DD.", err=True)
+            sys.exit(1)
+    
+    filters.bookmarked_only = bookmarked_only
+    
+    # Get and display filtered snapshots
+    try:
+        if search:
+            snapshots = timeline_manager.search_snapshots(search)
+        else:
+            snapshots = timeline_manager.filter_snapshots(filters)
+        
+        # Apply limit
+        if limit > 0:
+            snapshots = snapshots[:limit]
+        
+        if not snapshots:
+            click.echo("No snapshots found matching the criteria.")
+            return
+        
+        # Display results in a simple table format
+        click.echo(f"Found {len(snapshots)} snapshots:")
+        click.echo("-" * 80)
+        
+        for i, snapshot in enumerate(snapshots, 1):
+            timestamp_str = snapshot.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+            files_count = len(snapshot.files_affected)
+            description = snapshot.prompt_context[:60] + "..." if len(snapshot.prompt_context) > 60 else snapshot.prompt_context
+            
+            click.echo(f"{i:3d}. {snapshot.id[:10]}... | {timestamp_str} | {snapshot.action_type:15s} | {files_count:2d} files | {description}")
+        
+        click.echo("-" * 80)
+        click.echo(f"Total: {len(snapshots)} snapshots")
+        
+        if len(snapshots) == limit and limit > 0:
+            click.echo(f"(Limited to {limit} results. Use --limit to show more)")
+    
+    except Exception as e:
+        click.echo(f"Error retrieving snapshots: {e}", err=True)
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+
+
 if __name__ == '__main__':
     cli()
