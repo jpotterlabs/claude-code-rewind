@@ -46,6 +46,48 @@ class RollbackEngine(IRollbackEngine):
         
         logger.debug(f"RollbackEngine initialized for project: {project_root}")
     
+    def preview_selective_rollback(self, target_snapshot: SnapshotId, 
+                                  selected_files: List[Path]) -> RollbackPreview:
+        """Preview rollback for specific files only.
+        
+        Args:
+            target_snapshot: Snapshot to rollback to
+            selected_files: List of files to rollback
+            
+        Returns:
+            Preview of selective rollback operation
+        """
+        options = RollbackOptions(
+            selective_files=selected_files,
+            preserve_manual_changes=True,
+            create_backup=True,
+            dry_run=True
+        )
+        
+        return self.preview_rollback(target_snapshot, options)
+    
+    def execute_selective_rollback(self, target_snapshot: SnapshotId, 
+                                  selected_files: List[Path],
+                                  preserve_changes: bool = True) -> RollbackResult:
+        """Execute rollback for specific files only.
+        
+        Args:
+            target_snapshot: Snapshot to rollback to
+            selected_files: List of files to rollback
+            preserve_changes: Whether to preserve manual changes
+            
+        Returns:
+            Result of selective rollback operation
+        """
+        options = RollbackOptions(
+            selective_files=selected_files,
+            preserve_manual_changes=preserve_changes,
+            create_backup=True,
+            dry_run=False
+        )
+        
+        return self.execute_rollback(target_snapshot, options)
+    
     def preview_rollback(self, target_snapshot: SnapshotId, 
                         options: RollbackOptions) -> RollbackPreview:
         """Preview what a rollback operation would do.
@@ -259,7 +301,7 @@ class RollbackEngine(IRollbackEngine):
             )
     
     def resolve_conflicts(self, conflicts: List[FileConflict]) -> List[ConflictResolution]:
-        """Resolve conflicts during rollback.
+        """Resolve conflicts during rollback using smart resolution strategies.
         
         Args:
             conflicts: List of file conflicts
@@ -270,32 +312,356 @@ class RollbackEngine(IRollbackEngine):
         resolutions = []
         
         for conflict in conflicts:
-            # For now, implement simple resolution strategy
-            # In the future, this could be made interactive or configurable
-            
-            if conflict.conflict_type == "content_mismatch":
-                # Default to keeping current version for manual changes
-                resolution = ConflictResolution(
-                    file_path=conflict.file_path,
-                    resolution_type="keep_current"
-                )
-            elif conflict.conflict_type == "file_added":
-                # Keep newly added files by default
-                resolution = ConflictResolution(
-                    file_path=conflict.file_path,
-                    resolution_type="keep_current"
-                )
-            else:
-                # Default to snapshot version
-                resolution = ConflictResolution(
-                    file_path=conflict.file_path,
-                    resolution_type="use_snapshot"
-                )
-            
+            resolution = self._resolve_single_conflict(conflict)
             resolutions.append(resolution)
             logger.debug(f"Resolved conflict for {conflict.file_path}: {resolution.resolution_type}")
         
         return resolutions
+    
+    def _resolve_single_conflict(self, conflict: FileConflict) -> ConflictResolution:
+        """Resolve a single file conflict using smart strategies.
+        
+        Args:
+            conflict: File conflict to resolve
+            
+        Returns:
+            Conflict resolution
+        """
+        if conflict.conflict_type == "content_mismatch":
+            # Try three-way merge for content conflicts
+            return self._resolve_content_conflict(conflict)
+        elif conflict.conflict_type == "file_added":
+            # Keep newly added files by default
+            return ConflictResolution(
+                file_path=conflict.file_path,
+                resolution_type="keep_current"
+            )
+        elif conflict.conflict_type == "file_deleted":
+            # Ask user or use heuristics for deleted files
+            return self._resolve_deletion_conflict(conflict)
+        else:
+            # Default to snapshot version for unknown conflicts
+            return ConflictResolution(
+                file_path=conflict.file_path,
+                resolution_type="use_snapshot"
+            )
+    
+    def _resolve_content_conflict(self, conflict: FileConflict) -> ConflictResolution:
+        """Resolve content conflicts using three-way merge.
+        
+        Args:
+            conflict: Content conflict to resolve
+            
+        Returns:
+            Conflict resolution with merged content if possible
+        """
+        try:
+            # Get current file content
+            current_file = self.project_root / conflict.file_path
+            if not current_file.exists():
+                # File was deleted, use snapshot version
+                return ConflictResolution(
+                    file_path=conflict.file_path,
+                    resolution_type="use_snapshot"
+                )
+            
+            current_content = current_file.read_text(encoding='utf-8', errors='ignore')
+            
+            # Get snapshot content
+            snapshot_content = self.storage_manager.load_file_content(conflict.target_hash)
+            if snapshot_content is None:
+                # Can't get snapshot content, keep current
+                return ConflictResolution(
+                    file_path=conflict.file_path,
+                    resolution_type="keep_current"
+                )
+            
+            snapshot_text = snapshot_content.decode('utf-8', errors='ignore')
+            
+            # Try to find a common ancestor (base version)
+            # For now, we'll use a simple heuristic approach
+            base_content = self._find_base_content(conflict.file_path, current_content, snapshot_text)
+            
+            if base_content is not None:
+                # Attempt three-way merge
+                merged_content = self._three_way_merge(base_content, current_content, snapshot_text)
+                
+                if merged_content is not None:
+                    return ConflictResolution(
+                        file_path=conflict.file_path,
+                        resolution_type="merge",
+                        merged_content=merged_content
+                    )
+            
+            # If merge fails, analyze the changes to make a smart decision
+            return self._analyze_and_resolve_conflict(current_content, snapshot_text, conflict)
+            
+        except Exception as e:
+            logger.warning(f"Error resolving content conflict for {conflict.file_path}: {e}")
+            # Fallback to keeping current version
+            return ConflictResolution(
+                file_path=conflict.file_path,
+                resolution_type="keep_current"
+            )
+    
+    def _resolve_deletion_conflict(self, conflict: FileConflict) -> ConflictResolution:
+        """Resolve conflicts involving file deletion.
+        
+        Args:
+            conflict: Deletion conflict to resolve
+            
+        Returns:
+            Conflict resolution
+        """
+        current_file = self.project_root / conflict.file_path
+        
+        if current_file.exists():
+            # File exists now but was deleted in snapshot
+            # Check if it's been significantly modified
+            current_content = current_file.read_text(encoding='utf-8', errors='ignore')
+            
+            # Simple heuristic: if file is small or looks like a generated file, delete it
+            if len(current_content.strip()) < 50 or self._looks_like_generated_file(conflict.file_path):
+                return ConflictResolution(
+                    file_path=conflict.file_path,
+                    resolution_type="use_snapshot"  # Delete the file
+                )
+            else:
+                # Keep the file if it has substantial content
+                return ConflictResolution(
+                    file_path=conflict.file_path,
+                    resolution_type="keep_current"
+                )
+        else:
+            # File doesn't exist, no conflict
+            return ConflictResolution(
+                file_path=conflict.file_path,
+                resolution_type="use_snapshot"
+            )
+    
+    def _find_base_content(self, file_path: Path, current_content: str, snapshot_content: str) -> Optional[str]:
+        """Find the common ancestor content for three-way merge.
+        
+        This is a simplified implementation. In a full system, this would
+        look at git history or previous snapshots to find the actual base.
+        
+        Args:
+            file_path: Path to the file
+            current_content: Current file content
+            snapshot_content: Snapshot file content
+            
+        Returns:
+            Base content if found, None otherwise
+        """
+        # Simple heuristic: if the files are very similar, use the shorter one as base
+        current_lines = current_content.splitlines()
+        snapshot_lines = snapshot_content.splitlines()
+        
+        # Calculate similarity
+        common_lines = set(current_lines) & set(snapshot_lines)
+        total_lines = len(set(current_lines) | set(snapshot_lines))
+        
+        if total_lines == 0:
+            return ""
+        
+        similarity = len(common_lines) / total_lines
+        
+        if similarity > 0.7:  # If files are 70% similar
+            # Use the shorter version as a rough approximation of the base
+            if len(current_lines) < len(snapshot_lines):
+                return current_content
+            else:
+                return snapshot_content
+        
+        return None
+    
+    def _three_way_merge(self, base_content: str, current_content: str, snapshot_content: str) -> Optional[str]:
+        """Perform three-way merge of file contents.
+        
+        Args:
+            base_content: Common ancestor content
+            current_content: Current file content
+            snapshot_content: Snapshot file content
+            
+        Returns:
+            Merged content if successful, None if conflicts cannot be resolved
+        """
+        try:
+            # Simple line-based three-way merge
+            base_lines = base_content.splitlines()
+            current_lines = current_content.splitlines()
+            snapshot_lines = snapshot_content.splitlines()
+            
+            # Find changes from base to current and base to snapshot
+            current_changes = self._compute_line_changes(base_lines, current_lines)
+            snapshot_changes = self._compute_line_changes(base_lines, snapshot_lines)
+            
+            # Check for conflicting changes
+            if self._have_conflicting_changes(current_changes, snapshot_changes):
+                return None  # Cannot auto-merge
+            
+            # Apply both sets of changes
+            merged_lines = base_lines.copy()
+            
+            # Apply changes in reverse order to maintain line numbers
+            all_changes = sorted(current_changes + snapshot_changes, key=lambda x: x[0], reverse=True)
+            
+            for line_num, change_type, content in all_changes:
+                if change_type == "insert":
+                    merged_lines.insert(line_num, content)
+                elif change_type == "delete":
+                    if line_num < len(merged_lines):
+                        del merged_lines[line_num]
+                elif change_type == "modify":
+                    if line_num < len(merged_lines):
+                        merged_lines[line_num] = content
+            
+            return "\n".join(merged_lines)
+            
+        except Exception as e:
+            logger.warning(f"Three-way merge failed: {e}")
+            return None
+    
+    def _compute_line_changes(self, base_lines: List[str], target_lines: List[str]) -> List[Tuple[int, str, str]]:
+        """Compute line-level changes between base and target.
+        
+        Args:
+            base_lines: Base file lines
+            target_lines: Target file lines
+            
+        Returns:
+            List of changes as (line_number, change_type, content) tuples
+        """
+        import difflib
+        
+        changes = []
+        matcher = difflib.SequenceMatcher(None, base_lines, target_lines)
+        
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == 'delete':
+                for i in range(i1, i2):
+                    changes.append((i, "delete", ""))
+            elif tag == 'insert':
+                for j in range(j1, j2):
+                    changes.append((i1, "insert", target_lines[j]))
+            elif tag == 'replace':
+                # Handle as delete + insert
+                for i in range(i1, i2):
+                    changes.append((i, "delete", ""))
+                for j in range(j1, j2):
+                    changes.append((i1, "insert", target_lines[j]))
+        
+        return changes
+    
+    def _have_conflicting_changes(self, changes1: List[Tuple[int, str, str]], 
+                                 changes2: List[Tuple[int, str, str]]) -> bool:
+        """Check if two sets of changes conflict with each other.
+        
+        Args:
+            changes1: First set of changes
+            changes2: Second set of changes
+            
+        Returns:
+            True if changes conflict
+        """
+        # Simple conflict detection: changes affecting the same line
+        lines1 = {change[0] for change in changes1}
+        lines2 = {change[0] for change in changes2}
+        
+        return bool(lines1 & lines2)
+    
+    def _analyze_and_resolve_conflict(self, current_content: str, snapshot_content: str, 
+                                    conflict: FileConflict) -> ConflictResolution:
+        """Analyze content differences and make a smart resolution decision.
+        
+        Args:
+            current_content: Current file content
+            snapshot_content: Snapshot file content
+            conflict: The conflict being resolved
+            
+        Returns:
+            Conflict resolution
+        """
+        # Analyze the nature of changes
+        current_lines = current_content.splitlines()
+        snapshot_lines = snapshot_content.splitlines()
+        
+        # Check if current version just has additions at the end
+        if len(current_lines) > len(snapshot_lines):
+            if current_lines[:len(snapshot_lines)] == snapshot_lines:
+                # Current version just has additions, keep current
+                return ConflictResolution(
+                    file_path=conflict.file_path,
+                    resolution_type="keep_current"
+                )
+        
+        # Check if snapshot version just has additions at the end
+        if len(snapshot_lines) > len(current_lines):
+            if snapshot_lines[:len(current_lines)] == current_lines:
+                # Snapshot version just has additions, use snapshot
+                return ConflictResolution(
+                    file_path=conflict.file_path,
+                    resolution_type="use_snapshot"
+                )
+        
+        # Check for comment-only changes
+        if self._only_comments_changed(current_lines, snapshot_lines):
+            # Keep current version if only comments changed
+            return ConflictResolution(
+                file_path=conflict.file_path,
+                resolution_type="keep_current"
+            )
+        
+        # Default to keeping current version for manual changes
+        return ConflictResolution(
+            file_path=conflict.file_path,
+            resolution_type="keep_current"
+        )
+    
+    def _looks_like_generated_file(self, file_path: Path) -> bool:
+        """Check if a file looks like it was generated automatically.
+        
+        Args:
+            file_path: Path to check
+            
+        Returns:
+            True if file appears to be generated
+        """
+        path_str = str(file_path).lower()
+        
+        # Common patterns for generated files
+        generated_patterns = [
+            '__pycache__', '.pyc', '.pyo', '.egg-info',
+            'node_modules', '.git', '.DS_Store',
+            'build/', 'dist/', 'target/',
+            '.min.js', '.min.css'
+        ]
+        
+        return any(pattern in path_str for pattern in generated_patterns)
+    
+    def _only_comments_changed(self, lines1: List[str], lines2: List[str]) -> bool:
+        """Check if only comments changed between two versions.
+        
+        Args:
+            lines1: First version lines
+            lines2: Second version lines
+            
+        Returns:
+            True if only comments changed
+        """
+        # Remove comment lines and compare
+        def remove_comments(lines):
+            non_comment_lines = []
+            for line in lines:
+                stripped = line.strip()
+                if not stripped.startswith('#') and not stripped.startswith('//') and stripped:
+                    non_comment_lines.append(line)
+            return non_comment_lines
+        
+        non_comment1 = remove_comments(lines1)
+        non_comment2 = remove_comments(lines2)
+        
+        return non_comment1 == non_comment2
     
     def _get_current_project_state(self, selective_files: Optional[List[Path]] = None) -> Dict[Path, str]:
         """Get current state of project files.
@@ -358,7 +724,7 @@ class RollbackEngine(IRollbackEngine):
     
     def _detect_conflict(self, file_path: Path, current_hash: str, 
                         target_hash: str) -> Optional[FileConflict]:
-        """Detect if there's a conflict for a file.
+        """Detect if there's a conflict for a file using advanced heuristics.
         
         Args:
             file_path: Path to the file
@@ -368,10 +734,61 @@ class RollbackEngine(IRollbackEngine):
         Returns:
             FileConflict if conflict detected, None otherwise
         """
-        # Simple conflict detection - in practice this could be more sophisticated
-        # by checking if changes were made after the last Claude action
+        if current_hash == target_hash:
+            return None  # No conflict if hashes match
         
-        if current_hash != target_hash:
+        # Analyze the type and severity of conflict
+        current_file = self.project_root / file_path
+        
+        if not current_file.exists():
+            # File was deleted after snapshot
+            return FileConflict(
+                file_path=file_path,
+                current_hash=current_hash,
+                target_hash=target_hash,
+                conflict_type="file_deleted",
+                description=f"File {file_path} was deleted after snapshot"
+            )
+        
+        try:
+            current_content = current_file.read_text(encoding='utf-8', errors='ignore')
+            
+            # Get target content from storage
+            target_content_bytes = self.storage_manager.load_file_content(target_hash)
+            if target_content_bytes is None:
+                # Can't compare, assume conflict
+                return FileConflict(
+                    file_path=file_path,
+                    current_hash=current_hash,
+                    target_hash=target_hash,
+                    conflict_type="content_mismatch",
+                    description=f"File {file_path} has been modified (cannot retrieve snapshot version)"
+                )
+            
+            target_content = target_content_bytes.decode('utf-8', errors='ignore')
+            
+            # Analyze the nature of changes
+            conflict_severity = self._analyze_conflict_severity(current_content, target_content)
+            
+            if conflict_severity == "minor":
+                # Minor changes might not need user intervention
+                return None
+            
+            # Determine conflict type based on analysis
+            conflict_type = self._determine_conflict_type(current_content, target_content)
+            description = self._generate_conflict_description(file_path, current_content, target_content, conflict_type)
+            
+            return FileConflict(
+                file_path=file_path,
+                current_hash=current_hash,
+                target_hash=target_hash,
+                conflict_type=conflict_type,
+                description=description
+            )
+            
+        except Exception as e:
+            logger.warning(f"Error analyzing conflict for {file_path}: {e}")
+            # Fallback to basic conflict
             return FileConflict(
                 file_path=file_path,
                 current_hash=current_hash,
@@ -379,8 +796,124 @@ class RollbackEngine(IRollbackEngine):
                 conflict_type="content_mismatch",
                 description=f"File {file_path} has been modified since snapshot"
             )
+    
+    def _analyze_conflict_severity(self, current_content: str, target_content: str) -> str:
+        """Analyze the severity of a content conflict.
         
-        return None
+        Args:
+            current_content: Current file content
+            target_content: Target file content
+            
+        Returns:
+            Severity level: "minor", "moderate", or "major"
+        """
+        current_lines = current_content.splitlines()
+        target_lines = target_content.splitlines()
+        
+        # Calculate similarity
+        import difflib
+        similarity = difflib.SequenceMatcher(None, current_lines, target_lines).ratio()
+        
+        if similarity > 0.95:
+            return "minor"  # Very similar, likely whitespace or comment changes
+        elif similarity > 0.8:
+            return "moderate"  # Some changes but mostly similar
+        else:
+            return "major"  # Significant differences
+    
+    def _determine_conflict_type(self, current_content: str, target_content: str) -> str:
+        """Determine the type of conflict based on content analysis.
+        
+        Args:
+            current_content: Current file content
+            target_content: Target file content
+            
+        Returns:
+            Conflict type string
+        """
+        current_lines = current_content.splitlines()
+        target_lines = target_content.splitlines()
+        
+        # Check if it's just additions (current has more lines)
+        if len(current_lines) > len(target_lines):
+            # Check if target lines are a prefix of current lines
+            matches = True
+            for i, target_line in enumerate(target_lines):
+                if i >= len(current_lines) or current_lines[i] != target_line:
+                    matches = False
+                    break
+            
+            if matches:
+                return "additions_only"
+        
+        # Check if it's just deletions (target has more lines)
+        if len(target_lines) > len(current_lines):
+            # Check if current lines are a prefix of target lines
+            matches = True
+            for i, current_line in enumerate(current_lines):
+                if i >= len(target_lines) or target_lines[i] != current_line:
+                    matches = False
+                    break
+            
+            if matches:
+                return "deletions_only"
+        
+        # Check if only comments changed
+        if self._only_comments_changed(current_lines, target_lines):
+            return "comments_only"
+        
+        # Check if only whitespace changed
+        if self._only_whitespace_changed(current_content, target_content):
+            return "whitespace_only"
+        
+        # Default to content mismatch
+        return "content_mismatch"
+    
+    def _generate_conflict_description(self, file_path: Path, current_content: str, 
+                                     target_content: str, conflict_type: str) -> str:
+        """Generate a human-readable description of the conflict.
+        
+        Args:
+            file_path: Path to the file
+            current_content: Current file content
+            target_content: Target file content
+            conflict_type: Type of conflict
+            
+        Returns:
+            Human-readable conflict description
+        """
+        current_lines = len(current_content.splitlines())
+        target_lines = len(target_content.splitlines())
+        
+        if conflict_type == "additions_only":
+            added_lines = current_lines - target_lines
+            return f"File {file_path} has {added_lines} additional lines"
+        elif conflict_type == "deletions_only":
+            deleted_lines = target_lines - current_lines
+            return f"File {file_path} is missing {deleted_lines} lines from snapshot"
+        elif conflict_type == "comments_only":
+            return f"File {file_path} has only comment changes"
+        elif conflict_type == "whitespace_only":
+            return f"File {file_path} has only whitespace changes"
+        else:
+            line_diff = abs(current_lines - target_lines)
+            return f"File {file_path} has been modified ({line_diff} line difference)"
+    
+    def _only_whitespace_changed(self, content1: str, content2: str) -> bool:
+        """Check if only whitespace changed between two versions.
+        
+        Args:
+            content1: First version content
+            content2: Second version content
+            
+        Returns:
+            True if only whitespace changed
+        """
+        # Normalize whitespace and compare
+        normalized1 = ' '.join(content1.split())
+        normalized2 = ' '.join(content2.split())
+        
+        return normalized1 == normalized2
     
     def _restore_file(self, file_path: Path, target_file_state: FileState) -> None:
         """Restore a single file from snapshot.

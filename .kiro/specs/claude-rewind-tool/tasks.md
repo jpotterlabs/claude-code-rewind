@@ -93,9 +93,9 @@
     - Write integration tests for diff viewing functionality
     - _Requirements: 3.4, 3.5, 6.5_
 
-- [ ] 7. Develop rollback system
+- [x] 7. Develop rollback system
 
-  - [ ] 7.1 Implement basic rollback functionality
+  - [x] 7.1 Implement basic rollback functionality
 
     - Create RollbackEngine class with preview capabilities
     - Implement `claude-rewind rollback` and `claude-rewind preview` commands
@@ -103,7 +103,7 @@
     - Write unit tests for rollback operations and error handling
     - _Requirements: 2.1, 2.4, 6.4, 6.6_
 
-  - [ ] 7.2 Add smart rollback features
+  - [x] 7.2 Add smart rollback features
     - Implement selective file rollback functionality
     - Create three-way merge algorithm for preserving manual changes
     - Add conflict detection and resolution mechanisms

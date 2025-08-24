@@ -3,7 +3,7 @@
 import click
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 from datetime import datetime
 
 from ..core.config import ConfigManager
@@ -436,7 +436,7 @@ def diff(ctx: click.Context, snapshot_id: Optional[str], file: Optional[str],
             
             def load_snapshot(self, snapshot_id):
                 # Get snapshot metadata from database
-                snapshots = self.db_manager.get_snapshots(limit=1000)  # Get all to find by ID
+                snapshots = self.db_manager.list_snapshots(limit=1000)  # Get all to find by ID
                 snapshot_metadata = None
                 for s in snapshots:
                     if s.id == snapshot_id:
@@ -523,7 +523,7 @@ def diff(ctx: click.Context, snapshot_id: Optional[str], file: Optional[str],
         else:
             # No snapshot specified - show help or recent snapshots
             click.echo("No snapshot specified. Recent snapshots:")
-            snapshots = db_manager.get_snapshots(limit=10)
+            snapshots = db_manager.list_snapshots(limit=10)
             if not snapshots:
                 click.echo("No snapshots found.")
                 return
@@ -547,6 +547,356 @@ def diff(ctx: click.Context, snapshot_id: Optional[str], file: Optional[str],
     
     except Exception as e:
         click.echo(f"Error generating diff: {e}", err=True)
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument('snapshot_id')
+@click.option('--files', '-f', multiple=True, help='Specific files to rollback (can be used multiple times)')
+@click.option('--preserve-changes', is_flag=True, default=True, 
+              help='Preserve manual changes made after Claude actions')
+@click.option('--no-backup', is_flag=True, help='Skip creating backup before rollback')
+@click.option('--dry-run', is_flag=True, help='Show what would be done without making changes')
+@click.option('--force', is_flag=True, help='Skip confirmation prompts')
+@click.pass_context
+def rollback(ctx: click.Context, snapshot_id: str, files: Tuple[str], 
+            preserve_changes: bool, no_backup: bool, dry_run: bool, force: bool):
+    """Rollback project state to a specific snapshot."""
+    from ..core.rollback_engine import RollbackEngine
+    from ..core.models import RollbackOptions
+    from ..storage.database import DatabaseManager
+    from ..storage.file_store import FileStore
+    from pathlib import Path
+    
+    project_root = ctx.obj['project_root']
+    verbose = ctx.obj['verbose']
+    
+    # Check if project is initialized
+    rewind_dir = project_root / ".claude-rewind"
+    if not rewind_dir.exists():
+        click.echo("Claude Rewind is not initialized in this project.", err=True)
+        click.echo("Run 'claude-rewind init' first.")
+        sys.exit(1)
+    
+    try:
+        # Initialize storage components
+        db_manager = DatabaseManager(rewind_dir / "metadata.db")
+        file_store = FileStore(rewind_dir)
+        
+        # Create storage manager wrapper
+        class StorageManagerWrapper:
+            def __init__(self, db_manager, file_store):
+                self.db_manager = db_manager
+                self.file_store = file_store
+            
+            def load_snapshot(self, snapshot_id):
+                # Get snapshot metadata from database
+                snapshot_metadata = self.db_manager.get_snapshot(snapshot_id)
+                if not snapshot_metadata:
+                    return None
+                
+                # Get file states from file store
+                try:
+                    manifest = self.file_store.get_snapshot_manifest(snapshot_id)
+                    file_states = {}
+                    
+                    for file_path_str, file_info in manifest['files'].items():
+                        from ..core.models import FileState
+                        from datetime import datetime
+                        
+                        file_path = Path(file_path_str)
+                        file_state = FileState(
+                            path=file_path,
+                            content_hash=file_info.get('content_hash', ''),
+                            size=file_info.get('size', 0),
+                            modified_time=datetime.fromisoformat(file_info.get('modified_time', datetime.now().isoformat())),
+                            permissions=file_info.get('permissions', 0o644),
+                            exists=file_info.get('exists', True)
+                        )
+                        file_states[file_path] = file_state
+                    
+                    from ..core.models import Snapshot
+                    return Snapshot(
+                        id=snapshot_id,
+                        timestamp=snapshot_metadata.timestamp,
+                        metadata=snapshot_metadata,
+                        file_states=file_states
+                    )
+                except Exception as e:
+                    if verbose:
+                        click.echo(f"Error loading snapshot files: {e}", err=True)
+                    return None
+            
+            def load_file_content(self, content_hash):
+                try:
+                    return self.file_store.retrieve_content(content_hash)
+                except Exception:
+                    return None
+        
+        storage_manager = StorageManagerWrapper(db_manager, file_store)
+        
+        # Create rollback engine
+        rollback_engine = RollbackEngine(storage_manager, project_root)
+        
+        # Prepare rollback options
+        selective_files = [Path(f) for f in files] if files else None
+        options = RollbackOptions(
+            selective_files=selective_files,
+            preserve_manual_changes=preserve_changes,
+            create_backup=not no_backup,
+            dry_run=dry_run
+        )
+        
+        # Show preview first
+        click.echo(f"Analyzing rollback to snapshot: {snapshot_id}")
+        preview = rollback_engine.preview_rollback(snapshot_id, options)
+        
+        # Display preview
+        click.echo("\nRollback Preview:")
+        click.echo("=" * 50)
+        
+        if preview.files_to_restore:
+            click.echo(f"Files to restore ({len(preview.files_to_restore)}):")
+            for file_path in preview.files_to_restore[:10]:  # Show first 10
+                click.echo(f"  ✓ {file_path}")
+            if len(preview.files_to_restore) > 10:
+                click.echo(f"  ... and {len(preview.files_to_restore) - 10} more files")
+        
+        if preview.files_to_delete:
+            click.echo(f"\nFiles to delete ({len(preview.files_to_delete)}):")
+            for file_path in preview.files_to_delete[:10]:  # Show first 10
+                click.echo(f"  ✗ {file_path}")
+            if len(preview.files_to_delete) > 10:
+                click.echo(f"  ... and {len(preview.files_to_delete) - 10} more files")
+        
+        if preview.conflicts:
+            click.echo(f"\nConflicts detected ({len(preview.conflicts)}):")
+            for conflict in preview.conflicts[:5]:  # Show first 5
+                click.echo(f"  ⚠ {conflict.file_path}: {conflict.description}")
+            if len(preview.conflicts) > 5:
+                click.echo(f"  ... and {len(preview.conflicts) - 5} more conflicts")
+        
+        click.echo(f"\nTotal estimated changes: {preview.estimated_changes}")
+        
+        if dry_run:
+            click.echo("\n[DRY RUN] No actual changes would be made.")
+            return
+        
+        # Confirm rollback
+        if not force:
+            if preview.conflicts and preserve_changes:
+                click.echo("\n⚠ Conflicts detected. Manual changes will be preserved where possible.")
+            
+            if not click.confirm(f"\nProceed with rollback to {snapshot_id}?"):
+                click.echo("Rollback cancelled.")
+                return
+        
+        # Execute rollback
+        click.echo("\nExecuting rollback...")
+        result = rollback_engine.execute_rollback(snapshot_id, options)
+        
+        # Display results
+        if result.success:
+            click.echo("✅ Rollback completed successfully!")
+            click.echo(f"   Files restored: {len(result.files_restored)}")
+            click.echo(f"   Files deleted: {len(result.files_deleted)}")
+            if result.conflicts_resolved:
+                click.echo(f"   Conflicts resolved: {len(result.conflicts_resolved)}")
+        else:
+            click.echo("❌ Rollback completed with errors:", err=True)
+            for error in result.errors:
+                click.echo(f"   • {error}", err=True)
+        
+        if verbose and (result.files_restored or result.files_deleted):
+            click.echo("\nDetailed changes:")
+            for file_path in result.files_restored:
+                click.echo(f"  ✓ Restored: {file_path}")
+            for file_path in result.files_deleted:
+                click.echo(f"  ✗ Deleted: {file_path}")
+    
+    except Exception as e:
+        click.echo(f"Error during rollback: {e}", err=True)
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument('snapshot_id')
+@click.option('--files', '-f', multiple=True, help='Specific files to preview (can be used multiple times)')
+@click.option('--preserve-changes', is_flag=True, default=True,
+              help='Consider preserving manual changes in preview')
+@click.option('--detailed', '-d', is_flag=True, help='Show detailed file-by-file preview')
+@click.pass_context
+def preview(ctx: click.Context, snapshot_id: str, files: Tuple[str], 
+           preserve_changes: bool, detailed: bool):
+    """Preview what a rollback operation would do."""
+    from ..core.rollback_engine import RollbackEngine
+    from ..core.models import RollbackOptions
+    from ..storage.database import DatabaseManager
+    from ..storage.file_store import FileStore
+    from pathlib import Path
+    
+    project_root = ctx.obj['project_root']
+    verbose = ctx.obj['verbose']
+    
+    # Check if project is initialized
+    rewind_dir = project_root / ".claude-rewind"
+    if not rewind_dir.exists():
+        click.echo("Claude Rewind is not initialized in this project.", err=True)
+        click.echo("Run 'claude-rewind init' first.")
+        sys.exit(1)
+    
+    try:
+        # Initialize storage components
+        db_manager = DatabaseManager(rewind_dir / "metadata.db")
+        file_store = FileStore(rewind_dir)
+        
+        # Create storage manager wrapper (same as rollback command)
+        class StorageManagerWrapper:
+            def __init__(self, db_manager, file_store):
+                self.db_manager = db_manager
+                self.file_store = file_store
+            
+            def load_snapshot(self, snapshot_id):
+                snapshot_metadata = self.db_manager.get_snapshot(snapshot_id)
+                if not snapshot_metadata:
+                    return None
+                
+                try:
+                    manifest = self.file_store.get_snapshot_manifest(snapshot_id)
+                    file_states = {}
+                    
+                    for file_path_str, file_info in manifest['files'].items():
+                        from ..core.models import FileState
+                        from datetime import datetime
+                        
+                        file_path = Path(file_path_str)
+                        file_state = FileState(
+                            path=file_path,
+                            content_hash=file_info.get('content_hash', ''),
+                            size=file_info.get('size', 0),
+                            modified_time=datetime.fromisoformat(file_info.get('modified_time', datetime.now().isoformat())),
+                            permissions=file_info.get('permissions', 0o644),
+                            exists=file_info.get('exists', True)
+                        )
+                        file_states[file_path] = file_state
+                    
+                    from ..core.models import Snapshot
+                    return Snapshot(
+                        id=snapshot_id,
+                        timestamp=snapshot_metadata.timestamp,
+                        metadata=snapshot_metadata,
+                        file_states=file_states
+                    )
+                except Exception as e:
+                    if verbose:
+                        click.echo(f"Error loading snapshot files: {e}", err=True)
+                    return None
+            
+            def load_file_content(self, content_hash):
+                try:
+                    return self.file_store.retrieve_content(content_hash)
+                except Exception:
+                    return None
+        
+        storage_manager = StorageManagerWrapper(db_manager, file_store)
+        
+        # Create rollback engine
+        rollback_engine = RollbackEngine(storage_manager, project_root)
+        
+        # Prepare rollback options
+        selective_files = [Path(f) for f in files] if files else None
+        options = RollbackOptions(
+            selective_files=selective_files,
+            preserve_manual_changes=preserve_changes,
+            create_backup=False,  # No backup needed for preview
+            dry_run=True  # Always dry run for preview
+        )
+        
+        # Get snapshot info
+        snapshot_metadata = db_manager.get_snapshot(snapshot_id)
+        if not snapshot_metadata:
+            click.echo(f"Snapshot not found: {snapshot_id}", err=True)
+            sys.exit(1)
+        
+        # Show snapshot info
+        click.echo(f"Rollback Preview for Snapshot: {snapshot_id}")
+        click.echo("=" * 60)
+        click.echo(f"Timestamp: {snapshot_metadata.timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+        click.echo(f"Action: {snapshot_metadata.action_type}")
+        click.echo(f"Description: {snapshot_metadata.prompt_context[:100]}...")
+        click.echo()
+        
+        # Generate preview
+        click.echo("Analyzing changes...")
+        preview = rollback_engine.preview_rollback(snapshot_id, options)
+        
+        # Display summary
+        click.echo("Summary:")
+        click.echo("-" * 30)
+        click.echo(f"Files to restore: {len(preview.files_to_restore)}")
+        click.echo(f"Files to delete: {len(preview.files_to_delete)}")
+        click.echo(f"Conflicts: {len(preview.conflicts)}")
+        click.echo(f"Total changes: {preview.estimated_changes}")
+        
+        if not detailed:
+            # Show brief overview
+            if preview.files_to_restore:
+                click.echo(f"\nFiles to restore (showing first 5 of {len(preview.files_to_restore)}):")
+                for file_path in preview.files_to_restore[:5]:
+                    click.echo(f"  ✓ {file_path}")
+                if len(preview.files_to_restore) > 5:
+                    click.echo(f"  ... and {len(preview.files_to_restore) - 5} more")
+            
+            if preview.files_to_delete:
+                click.echo(f"\nFiles to delete (showing first 5 of {len(preview.files_to_delete)}):")
+                for file_path in preview.files_to_delete[:5]:
+                    click.echo(f"  ✗ {file_path}")
+                if len(preview.files_to_delete) > 5:
+                    click.echo(f"  ... and {len(preview.files_to_delete) - 5} more")
+            
+            if preview.conflicts:
+                click.echo(f"\nConflicts (showing first 3 of {len(preview.conflicts)}):")
+                for conflict in preview.conflicts[:3]:
+                    click.echo(f"  ⚠ {conflict.file_path}: {conflict.description}")
+                if len(preview.conflicts) > 3:
+                    click.echo(f"  ... and {len(preview.conflicts) - 3} more")
+        else:
+            # Show detailed view
+            if preview.files_to_restore:
+                click.echo(f"\nFiles to restore ({len(preview.files_to_restore)}):")
+                for file_path in preview.files_to_restore:
+                    click.echo(f"  ✓ {file_path}")
+            
+            if preview.files_to_delete:
+                click.echo(f"\nFiles to delete ({len(preview.files_to_delete)}):")
+                for file_path in preview.files_to_delete:
+                    click.echo(f"  ✗ {file_path}")
+            
+            if preview.conflicts:
+                click.echo(f"\nConflicts ({len(preview.conflicts)}):")
+                for conflict in preview.conflicts:
+                    click.echo(f"  ⚠ {conflict.file_path}")
+                    click.echo(f"    Type: {conflict.conflict_type}")
+                    click.echo(f"    Description: {conflict.description}")
+        
+        # Show next steps
+        click.echo("\nNext steps:")
+        if files:
+            click.echo(f"  claude-rewind rollback {snapshot_id} --files " + " --files ".join(files))
+        else:
+            click.echo(f"  claude-rewind rollback {snapshot_id}")
+        
+        if preview.conflicts and preserve_changes:
+            click.echo("  (Conflicts will be resolved automatically with --preserve-changes)")
+    
+    except Exception as e:
+        click.echo(f"Error generating preview: {e}", err=True)
         if verbose:
             import traceback
             traceback.print_exc()
