@@ -549,7 +549,8 @@ class DiffViewer(IDiffViewer):
                 if self.enable_colors:
                     header = f"\033[1;34m{header}\033[0m"
                 
-                return f"{header}\n{'=' * len(header.replace('\033[1;34m', '').replace('\033[0m', ''))}\n\n{diff_text}"
+                header_clean = header.replace('\033[1;34m', '').replace('\033[0m', '')
+                return f"{header}\n{'=' * len(header_clean)}\n\n{diff_text}"
             
             return diff_text
             

@@ -162,8 +162,276 @@ def init(ctx: click.Context, force: bool, skip_git_check: bool):
     click.echo("\n🎉 Claude Rewind initialized successfully!")
     click.echo("\nNext steps:")
     click.echo("  • Run 'claude-rewind status' to verify the setup")
-    click.echo("  • Start using Claude Code - snapshots will be created automatically")
+    click.echo("  • Run 'claude-rewind monitor' to start intelligent Claude Code monitoring")
     click.echo("  • Use 'claude-rewind timeline' to view your action history")
+    click.echo("  • Use 'claude-rewind diff <snapshot-id>' to see what changed")
+
+
+@cli.command()
+@click.option('--mode', type=click.Choice(['claude', 'filesystem', 'hybrid']), default='claude',
+              help='Monitoring mode: claude (Claude Code integration), filesystem (file watching), or hybrid (both)')
+@click.option('--sensitivity', type=click.Choice(['low', 'medium', 'high']), default='medium',
+              help='Detection sensitivity for Claude actions')
+@click.option('--no-backup', is_flag=True, help='Skip creating backup snapshots on start')
+@click.pass_context
+def monitor(ctx: click.Context, mode: str, sensitivity: str, no_backup: bool):
+    """Start automatic monitoring and snapshot creation for Claude Code actions.
+
+    This is the sophisticated monitoring system that replaces the simple 'watch' command.
+    It can detect Claude Code actions intelligently rather than just watching for file changes.
+    """
+    from ..core.snapshot_engine import SnapshotEngine
+    from ..hooks.claude_hook_manager import ClaudeHookManager
+    from ..hooks.claude_interceptor import ClaudeCodeInterceptor
+    from ..core.models import ActionContext
+    from ..core.config import PerformanceConfig
+    import time
+
+    project_root = ctx.obj['project_root']
+    config = ctx.obj['config']
+    verbose = ctx.obj['verbose']
+
+    rewind_dir = project_root / ".claude-rewind"
+    if not rewind_dir.exists():
+        click.echo("Claude Rewind not initialized in this project.", err=True)
+        click.echo("Run 'claude-rewind init' first.")
+        sys.exit(1)
+
+    # Initialize components
+    performance_config = PerformanceConfig()
+    snapshot_engine = SnapshotEngine(project_root, rewind_dir, performance_config)
+
+    click.echo(f"🎯 Starting Claude Code monitoring in {mode} mode...")
+    click.echo(f"📍 Project: {project_root}")
+    click.echo(f"🔧 Sensitivity: {sensitivity}")
+
+    try:
+        if mode in ['claude', 'hybrid']:
+            # Initialize Claude Code integration
+            claude_manager = ClaudeHookManager(project_root, snapshot_engine, config)
+            claude_interceptor = ClaudeCodeInterceptor(project_root, config)
+
+            # Create backup snapshot if requested
+            if not no_backup:
+                click.echo("📸 Creating backup snapshot before monitoring...")
+                backup_context = ActionContext(
+                    action_type="backup",
+                    timestamp=datetime.now(),
+                    prompt_context="Pre-monitoring backup snapshot",
+                    affected_files=[],
+                    tool_name="claude_rewind_monitor",
+                    session_id=None
+                )
+                try:
+                    backup_id = snapshot_engine.create_snapshot(backup_context)
+                    click.echo(f"✅ Backup snapshot created: {backup_id}")
+                except Exception as e:
+                    click.echo(f"⚠️  Warning: Failed to create backup: {e}")
+
+            # Start Claude monitoring
+            if claude_manager.start_monitoring():
+                click.echo("🔍 Claude Code integration monitoring started")
+            else:
+                click.echo("❌ Failed to start Claude monitoring", err=True)
+                if mode == 'claude':
+                    sys.exit(1)
+
+        if mode in ['filesystem', 'hybrid']:
+            # Fallback to filesystem watching for broader coverage
+            click.echo("👁️  Adding filesystem monitoring as fallback...")
+
+        # Set sensitivity levels
+        sensitivity_configs = {
+            'low': {'check_interval': 2.0, 'confidence_threshold': 0.8},
+            'medium': {'check_interval': 1.0, 'confidence_threshold': 0.7},
+            'high': {'check_interval': 0.5, 'confidence_threshold': 0.6}
+        }
+
+        sens_config = sensitivity_configs[sensitivity]
+
+        click.echo("🚀 Monitoring active! Press Ctrl+C to stop.")
+        click.echo("=" * 50)
+
+        # Main monitoring loop
+        snapshots_created = 0
+        actions_detected = 0
+        start_time = datetime.now()
+
+        while True:
+            try:
+                if mode in ['claude', 'hybrid']:
+                    # Check for Claude actions using the interceptor
+                    detected_actions = claude_interceptor.detect_claude_actions()
+
+                    for action in detected_actions:
+                        if action.estimated_confidence >= sens_config['confidence_threshold']:
+                            actions_detected += 1
+
+                            # Convert to ActionContext
+                            action_context = ActionContext(
+                                action_type=action.tool_name,
+                                timestamp=action.timestamp,
+                                prompt_context=f"Claude {action.tool_name}: {action.detection_method}",
+                                affected_files=action.file_paths,
+                                tool_name="claude_code",
+                                session_id=claude_manager._current_session_id if 'claude_manager' in locals() else None
+                            )
+
+                            if verbose:
+                                click.echo(f"🎯 Detected: {action.tool_name} on {action.file_paths} "
+                                         f"(confidence: {action.estimated_confidence:.2f})")
+
+                # Display periodic status
+                if verbose and actions_detected > 0 and actions_detected % 5 == 0:
+                    runtime = datetime.now() - start_time
+                    click.echo(f"📊 Status: {actions_detected} actions detected, "
+                             f"{snapshots_created} snapshots created, "
+                             f"runtime: {runtime.total_seconds():.0f}s")
+
+                # Sleep based on sensitivity
+                time.sleep(sens_config['check_interval'])
+
+            except Exception as e:
+                click.echo(f"❌ Error in monitoring loop: {e}", err=True)
+                if verbose:
+                    import traceback
+                    traceback.print_exc()
+                time.sleep(2.0)  # Longer sleep on error
+
+    except KeyboardInterrupt:
+        click.echo("\n🛑 Stopping monitoring...")
+
+        if mode in ['claude', 'hybrid'] and 'claude_manager' in locals():
+            if claude_manager.stop_monitoring():
+                click.echo("✅ Claude monitoring stopped")
+
+            # Show session statistics
+            stats = claude_manager.get_session_stats()
+            click.echo(f"📊 Session Summary:")
+            click.echo(f"   • Actions detected: {stats.get('action_count', 0)}")
+            click.echo(f"   • Session duration: {stats.get('session_duration_seconds', 0):.1f}s")
+            click.echo(f"   • Total snapshots: {snapshots_created}")
+
+        click.echo("👋 Monitoring stopped.")
+
+    except Exception as e:
+        click.echo(f"💥 Fatal error in monitoring: {e}", err=True)
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+
+
+@cli.command()
+@click.pass_context
+def watch(ctx: click.Context):
+    """Legacy file watching command (deprecated).
+
+    This command has been replaced by 'claude-rewind monitor' which provides
+    intelligent Claude Code integration instead of simple file watching.
+    """
+    click.echo("⚠️  The 'watch' command is deprecated and will be removed in a future version.")
+    click.echo("")
+    click.echo("🎯 The new 'monitor' command provides intelligent Claude Code integration:")
+    click.echo("   • Detects actual Claude actions (not just any file change)")
+    click.echo("   • Creates context-rich snapshots with metadata")
+    click.echo("   • Tracks Claude Code sessions")
+    click.echo("   • Multiple detection modes and sensitivity levels")
+    click.echo("")
+    click.echo("💡 Migration guide:")
+    click.echo("   Old: claude-rewind watch")
+    click.echo("   New: claude-rewind monitor")
+    click.echo("")
+
+    if click.confirm("Would you like to start the new monitor command now?"):
+        ctx.invoke(monitor)
+    else:
+        click.echo("")
+        click.echo("📚 Learn more:")
+        click.echo("   claude-rewind monitor --help")
+        click.echo("   claude-rewind session --help")
+
+
+@cli.command()
+@click.option('--action', type=click.Choice(['start', 'stop', 'status', 'stats']), default='status',
+              help='Action to perform on Claude Code session')
+@click.option('--show-recent', type=int, default=5, help='Number of recent actions to show')
+@click.pass_context
+def session(ctx: click.Context, action: str, show_recent: int):
+    """Manage Claude Code monitoring sessions."""
+    from ..hooks.claude_hook_manager import ClaudeHookManager
+    from ..core.snapshot_engine import SnapshotEngine
+    from ..core.config import PerformanceConfig
+
+    project_root = ctx.obj['project_root']
+    config = ctx.obj['config']
+    verbose = ctx.obj['verbose']
+
+    rewind_dir = project_root / ".claude-rewind"
+    if not rewind_dir.exists():
+        click.echo("Claude Rewind not initialized in this project.", err=True)
+        click.echo("Run 'claude-rewind init' first.")
+        sys.exit(1)
+
+    # Initialize components
+    performance_config = PerformanceConfig()
+    snapshot_engine = SnapshotEngine(project_root, rewind_dir, performance_config)
+    claude_manager = ClaudeHookManager(project_root, snapshot_engine, config)
+
+    if action == 'start':
+        click.echo("🚀 Starting Claude Code monitoring session...")
+        if claude_manager.start_monitoring():
+            click.echo("✅ Monitoring session started successfully")
+            stats = claude_manager.get_session_stats()
+            click.echo(f"📋 Session ID: {stats.get('session_id', 'Unknown')}")
+        else:
+            click.echo("❌ Failed to start monitoring session", err=True)
+            sys.exit(1)
+
+    elif action == 'stop':
+        if claude_manager.stop_monitoring():
+            click.echo("🛑 Monitoring session stopped")
+            stats = claude_manager.get_session_stats()
+            if stats.get('action_count', 0) > 0:
+                click.echo(f"📊 Final stats: {stats['action_count']} actions detected")
+        else:
+            click.echo("⚠️  No active session to stop")
+
+    elif action == 'stats':
+        stats = claude_manager.get_session_stats()
+        click.echo("📊 Claude Code Session Statistics")
+        click.echo("=" * 40)
+
+        if stats.get('session_id'):
+            click.echo(f"Session ID: {stats['session_id']}")
+            click.echo(f"Started: {stats.get('session_start_time', 'Unknown')}")
+            click.echo(f"Duration: {stats.get('session_duration_seconds', 0):.1f}s")
+            click.echo(f"Actions detected: {stats.get('action_count', 0)}")
+            click.echo(f"Recent actions: {stats.get('recent_actions_count', 0)}")
+            click.echo(f"Monitoring active: {'Yes' if stats.get('is_monitoring') else 'No'}")
+            click.echo(f"Hook count: {stats.get('pre_hooks_count', 0)} pre, {stats.get('post_hooks_count', 0)} post")
+
+            if show_recent > 0:
+                recent_actions = claude_manager.get_recent_actions(show_recent)
+                if recent_actions:
+                    click.echo(f"\n📝 Recent Actions (last {len(recent_actions)}):")
+                    for i, action in enumerate(recent_actions, 1):
+                        time_str = action.timestamp.strftime("%H:%M:%S")
+                        click.echo(f"  {i}. [{time_str}] {action.action_type} - {len(action.affected_files)} files")
+        else:
+            click.echo("No active session")
+
+    else:  # status
+        stats = claude_manager.get_session_stats()
+
+        if stats.get('is_monitoring'):
+            click.echo("🟢 Monitoring Status: ACTIVE")
+            click.echo(f"   Session: {stats.get('session_id', 'Unknown')}")
+            click.echo(f"   Actions: {stats.get('action_count', 0)}")
+            click.echo(f"   Duration: {stats.get('session_duration_seconds', 0):.1f}s")
+        else:
+            click.echo("🔴 Monitoring Status: INACTIVE")
+            click.echo("   Use 'claude-rewind monitor' to start monitoring")
 
 
 @cli.command()

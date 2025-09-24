@@ -65,23 +65,27 @@ Every developer using Claude Code has experienced this nightmare:
 ### Installation
 
 ```bash
-# Install via pip (recommended)
-pip install claude-code-rewind
-
-# Or install via npm
-npm install -g claude-code-rewind
-
-# Or clone and install from source
+# Clone and install directly (no virtual environment needed!)
 git clone https://github.com/holasoymalva/claude-code-rewind.git
 cd claude-code-rewind
 pip install -e .
+
+# Verify installation
+claude-rewind --help
 ```
+
+**🎯 That's it!** The `claude-rewind` command is now available globally.
+
+📚 **[Full Installation Guide](INSTALLATION.md)** - Detailed instructions, troubleshooting, and advanced options.
 
 ### Initialize in Your Project
 
 ```bash
 cd your-project
 claude-rewind init
+
+# Start intelligent monitoring
+claude-rewind monitor
 
 # That's it! Claude Code Rewind Tool is now protecting your code
 ```
