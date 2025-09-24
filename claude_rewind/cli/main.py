@@ -486,19 +486,111 @@ def cleanup(ctx: click.Context, dry_run: bool, force: bool):
     max_snapshots = storage_config.get('max_snapshots', 100)
     cleanup_after_days = storage_config.get('cleanup_after_days', 30)
     
-    if dry_run:
-        click.echo(f"Dry run: Would clean up snapshots older than {cleanup_after_days} days")
-        click.echo(f"Dry run: Would keep maximum of {max_snapshots} snapshots")
-        click.echo("Note: Actual cleanup logic will be implemented in storage tasks")
-    else:
+    try:
+        # Initialize storage components
+        from ..storage.database import DatabaseManager
+        from ..storage.file_store import FileStore
+        from datetime import datetime, timedelta
+
+        db_manager = DatabaseManager(rewind_dir / "metadata.db")
+        file_store = FileStore(rewind_dir)
+
+        # Get current snapshots
+        all_snapshots = db_manager.list_snapshots()
+        if not all_snapshots:
+            click.echo("No snapshots found to clean up.")
+            return
+
+        # Calculate cleanup targets
+        cutoff_date = datetime.now() - timedelta(days=cleanup_after_days)
+        old_snapshots = [s for s in all_snapshots if s.timestamp < cutoff_date]
+        excess_snapshots = []
+
+        # Check if we exceed max_snapshots limit
+        if len(all_snapshots) > max_snapshots:
+            # Sort by timestamp (newest first) and take excess
+            sorted_snapshots = sorted(all_snapshots, key=lambda x: x.timestamp, reverse=True)
+            excess_snapshots = sorted_snapshots[max_snapshots:]
+
+        # Combine cleanup targets
+        snapshots_to_delete = list(set(old_snapshots + excess_snapshots))
+
+        if not snapshots_to_delete:
+            click.echo("✅ No cleanup needed.")
+            click.echo(f"   Total snapshots: {len(all_snapshots)}")
+            click.echo(f"   Oldest snapshot: {min(all_snapshots, key=lambda x: x.timestamp).timestamp.strftime('%Y-%m-%d %H:%M')}")
+            return
+
+        # Show what will be cleaned
+        click.echo(f"Cleanup Analysis:")
+        click.echo(f"  Total snapshots: {len(all_snapshots)}")
+        click.echo(f"  Snapshots older than {cleanup_after_days} days: {len(old_snapshots)}")
+        click.echo(f"  Snapshots exceeding limit of {max_snapshots}: {len(excess_snapshots)}")
+        click.echo(f"  Total to delete: {len(snapshots_to_delete)}")
+
+        if dry_run:
+            click.echo("\n[DRY RUN] Would delete the following snapshots:")
+            for snapshot in sorted(snapshots_to_delete, key=lambda x: x.timestamp):
+                age_days = (datetime.now() - snapshot.timestamp).days
+                click.echo(f"  • {snapshot.id} ({snapshot.timestamp.strftime('%Y-%m-%d %H:%M')}) - {age_days} days old")
+            click.echo(f"\nDisk space that would be freed: Calculating...")
+
+            # Calculate approximate disk usage
+            total_size = 0
+            for snapshot in snapshots_to_delete:
+                try:
+                    snapshot_data = file_store.get_snapshot_manifest(snapshot.id)
+                    total_size += snapshot_data.get('total_size', 0)
+                except:
+                    pass  # Skip if can't calculate
+
+            if total_size > 0:
+                size_mb = total_size / (1024 * 1024)
+                click.echo(f"Estimated disk space to be freed: {size_mb:.1f} MB")
+
+            return
+
+        # Confirm deletion
         if not force:
-            if not click.confirm(f"Clean up snapshots older than {cleanup_after_days} days?"):
+            if not click.confirm(f"\nDelete {len(snapshots_to_delete)} snapshots?"):
                 click.echo("Cleanup cancelled.")
                 return
-        
-        click.echo("Cleanup functionality will be fully implemented in storage tasks")
+
+        # Execute cleanup
+        click.echo("\nExecuting cleanup...")
+        deleted_count = 0
+        failed_count = 0
+
+        for snapshot in snapshots_to_delete:
+            try:
+                # Delete from file store
+                file_store.delete_snapshot(snapshot.id)
+                # Delete from database
+                db_manager.delete_snapshot(snapshot.id)
+                deleted_count += 1
+
+                if verbose:
+                    age_days = (datetime.now() - snapshot.timestamp).days
+                    click.echo(f"  ✓ Deleted {snapshot.id} ({age_days} days old)")
+
+            except Exception as e:
+                failed_count += 1
+                if verbose:
+                    click.echo(f"  ✗ Failed to delete {snapshot.id}: {e}")
+
+        # Report results
+        click.echo(f"\n✅ Cleanup completed!")
+        click.echo(f"   Snapshots deleted: {deleted_count}")
+        if failed_count > 0:
+            click.echo(f"   Failed deletions: {failed_count}")
+        click.echo(f"   Remaining snapshots: {len(all_snapshots) - deleted_count}")
+
+    except Exception as e:
+        click.echo(f"Error during cleanup: {e}", err=True)
         if verbose:
-            click.echo(f"Configuration: max_snapshots={max_snapshots}, cleanup_after_days={cleanup_after_days}")
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
 
 
 @cli.command()
@@ -596,9 +688,27 @@ def timeline(ctx: click.Context, filter_action: Optional[str], filter_date: Opti
     # Initialize timeline manager
     timeline_manager = TimelineManager(db_manager)
     
-    # If no options provided, show interactive timeline
+    # If no options provided, show timeline
     if not any([filter_action, filter_date, search, bookmarked_only]):
-        timeline_manager.show_interactive_timeline()
+        # Check if running in interactive terminal
+        import sys
+        if sys.stdout.isatty() and sys.stdin.isatty():
+            timeline_manager.show_interactive_timeline()
+        else:
+            # Non-interactive mode - show simple timeline listing
+            click.echo("Timeline (non-interactive mode):")
+            snapshots = db_manager.list_snapshots(limit=20)  # Show last 20
+            if not snapshots:
+                click.echo("No snapshots found.")
+                return
+
+            for i, snapshot in enumerate(snapshots, 1):
+                timestamp_str = snapshot.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                click.echo(f"  {i:2d}. {snapshot.id} | {timestamp_str} | {snapshot.action_type}")
+
+            if len(snapshots) == 20:
+                click.echo("  ... (showing last 20 snapshots)")
+            click.echo(f"\nTotal: {len(db_manager.list_snapshots())} snapshots")
         return
     
     # Apply command-line filters
