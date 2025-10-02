@@ -272,22 +272,29 @@ class DatabaseManager:
     
     def delete_snapshot(self, snapshot_id: str) -> bool:
         """Delete snapshot and associated file changes.
-        
+
         Args:
             snapshot_id: Unique snapshot identifier
-            
+
         Returns:
             True if snapshot was deleted, False if not found
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            
+
+            # First, update any snapshots that reference this as their parent
+            # Set their parent_snapshot to NULL
+            cursor.execute(
+                "UPDATE snapshots SET parent_snapshot = NULL WHERE parent_snapshot = ?",
+                (snapshot_id,)
+            )
+
             # Delete snapshot (file_changes will be deleted by CASCADE)
             cursor.execute("DELETE FROM snapshots WHERE id = ?", (snapshot_id,))
             deleted = cursor.rowcount > 0
-            
+
             conn.commit()
-            
+
             if deleted:
                 logger.debug(f"Deleted snapshot: {snapshot_id}")
             

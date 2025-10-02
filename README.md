@@ -65,23 +65,27 @@ Every developer using Claude Code has experienced this nightmare:
 ### Installation
 
 ```bash
-# Install via pip (recommended)
-pip install claude-code-rewind
-
-# Or install via npm
-npm install -g claude-code-rewind
-
-# Or clone and install from source
+# Clone and install directly (no virtual environment needed!)
 git clone https://github.com/holasoymalva/claude-code-rewind.git
 cd claude-code-rewind
 pip install -e .
+
+# Verify installation
+claude-rewind --help
 ```
+
+**🎯 That's it!** The `claude-rewind` command is now available globally.
+
+📚 **[Full Installation Guide](INSTALLATION.md)** - Detailed instructions, troubleshooting, and advanced options.
 
 ### Initialize in Your Project
 
 ```bash
 cd your-project
 claude-rewind init
+
+# Start intelligent monitoring
+claude-rewind monitor
 
 # That's it! Claude Code Rewind Tool is now protecting your code
 ```
@@ -225,11 +229,17 @@ hooks:
 
 ## 🗺️ **Roadmap**
 
-### ✅ **v1.0 - Core Functionality** *(Current)*
-- [x] Automatic snapshot capture
-- [x] Basic rollback functionality
-- [x] Terminal diff viewer
-- [x] Timeline navigation
+### ✅ **v1.0 - Core Functionality** *(Complete - All 12/12 CLI Commands Working)*
+- [x] Automatic snapshot capture with intelligent Claude Code detection
+- [x] Complete rollback functionality with selective file rollback
+- [x] Advanced terminal diff viewer with syntax highlighting
+- [x] Interactive timeline navigation (both terminal and non-interactive modes)
+- [x] Smart cleanup system with age and count-based management
+- [x] Comprehensive configuration and validation system
+- [x] Hook system with extensible plugin architecture
+- [x] Git integration with automatic commit generation
+- [x] Performance optimizations (incremental, parallel, lazy loading)
+- [x] Professional error handling and logging
 
 ### 🚧 **v1.5 - Enhanced UX** *(In Progress)*
 - [ ] Web dashboard for visual timeline

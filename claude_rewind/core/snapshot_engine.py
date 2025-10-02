@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Any
+import pathspec
 
 from .interfaces import ISnapshotEngine
 from .models import (
@@ -17,7 +18,8 @@ from .models import (
 )
 from ..storage.database import DatabaseManager
 from ..storage.file_store import FileStore
-from .config import PerformanceConfig
+from ..storage.auto_cleanup import StorageCleanupManager
+from .config import PerformanceConfig, StorageConfig, GitIntegrationConfig
 
 
 logger = logging.getLogger(__name__)
@@ -30,44 +32,97 @@ class SnapshotEngineError(Exception):
 
 class SnapshotEngine(ISnapshotEngine):
     """Core engine for creating and managing project snapshots."""
-    
-    def __init__(self, project_root: Path, storage_root: Path, 
-                 performance_config: Optional[PerformanceConfig] = None):
+
+    def __init__(self, project_root: Path, storage_root: Path,
+                 performance_config: Optional[PerformanceConfig] = None,
+                 storage_config: Optional[StorageConfig] = None,
+                 git_config: Optional[GitIntegrationConfig] = None,
+                 auto_cleanup_enabled: bool = True):
         """Initialize snapshot engine.
-        
+
         Args:
             project_root: Root directory of the project to snapshot
             storage_root: Root directory for snapshot storage
             performance_config: Performance configuration settings
+            storage_config: Storage configuration for cleanup limits
+            git_config: Git integration configuration
+            auto_cleanup_enabled: Enable automatic storage cleanup (default: True)
         """
         self.project_root = project_root.resolve()
         self.storage_root = storage_root
         self.performance_config = performance_config or PerformanceConfig()
-        
+        self.storage_config = storage_config or StorageConfig()
+        self.git_config = git_config or GitIntegrationConfig()
+
         # Initialize storage components with performance config
         self.db_manager = DatabaseManager(storage_root / "metadata.db")
         self.file_store = FileStore(
-            storage_root, 
+            storage_root,
             compression_level=getattr(performance_config, 'compression_level', 3) if performance_config else 3
         )
-        
+
+        # Initialize automatic cleanup manager
+        self.cleanup_manager = StorageCleanupManager(
+            self.db_manager,
+            self.file_store,
+            self.storage_config,
+            self.storage_root
+        )
+
+        # Start automatic cleanup if enabled
+        if auto_cleanup_enabled:
+            self.cleanup_manager.start_automatic_cleanup(interval_seconds=300)  # Check every 5 minutes
+
         # Cache for file states to optimize incremental snapshots
         self._last_snapshot_states: Dict[Path, FileState] = {}
         self._last_snapshot_id: Optional[SnapshotId] = None
-        
+
         # Performance optimization caches
         self._file_hash_cache: Dict[Tuple[Path, float, int], str] = {}  # (path, mtime, size) -> hash
         self._cache_lock = threading.Lock()
-        
+
         # Lazy loading cache for large files
         self._lazy_content_cache: Dict[str, bytes] = {}
         self._lazy_cache_lock = threading.Lock()
-        
+
+        # Load .gitignore patterns if respect_gitignore is enabled
+        self._gitignore_spec = None
+        if self.git_config.respect_gitignore:
+            self._load_gitignore()
+
         logger.info(f"SnapshotEngine initialized for project: {project_root}")
         logger.debug(f"Performance config: max_file_size={self.performance_config.max_file_size_mb}MB, "
                     f"parallel={self.performance_config.parallel_processing}, "
                     f"memory_limit={self.performance_config.memory_limit_mb}MB")
-    
+        logger.debug(f"Auto cleanup: enabled={auto_cleanup_enabled}, "
+                    f"max_snapshots={self.storage_config.max_snapshots}, "
+                    f"max_disk_mb={self.storage_config.max_disk_usage_mb}")
+
+    def _load_gitignore(self) -> None:
+        """Load .gitignore patterns from project root."""
+        gitignore_path = self.project_root / ".gitignore"
+
+        if not gitignore_path.exists():
+            logger.debug("No .gitignore found in project root")
+            return
+
+        try:
+            with open(gitignore_path, 'r') as f:
+                patterns = f.read().splitlines()
+
+            # Filter out comments and empty lines
+            patterns = [p for p in patterns if p.strip() and not p.strip().startswith('#')]
+
+            # Create pathspec from patterns
+            self._gitignore_spec = pathspec.PathSpec.from_lines('gitwildmatch', patterns)
+
+            logger.info(f"Loaded {len(patterns)} .gitignore patterns")
+            logger.debug(f"Gitignore patterns: {patterns[:5]}..." if len(patterns) > 5 else f"Gitignore patterns: {patterns}")
+
+        except Exception as e:
+            logger.warning(f"Failed to load .gitignore: {e}")
+            self._gitignore_spec = None
+
     def create_snapshot(self, context: ActionContext) -> SnapshotId:
         """Create a new snapshot of the current project state.
         
@@ -134,7 +189,30 @@ class SnapshotEngine(ISnapshotEngine):
             # Update cache for next incremental snapshot
             self._last_snapshot_states = current_states.copy()
             self._last_snapshot_id = snapshot_id
-            
+
+            # Trigger immediate cleanup check after snapshot creation
+            # This ensures limits are enforced proactively
+            try:
+                deleted_count = self.cleanup_manager.enforce_storage_limits()
+                if deleted_count > 0:
+                    logger.info(f"Post-snapshot cleanup: removed {deleted_count} old snapshots")
+
+                    # Check if our last snapshot ID was deleted during cleanup
+                    # If so, clear it to avoid foreign key issues
+                    if self._last_snapshot_id:
+                        try:
+                            remaining_snapshot = self.db_manager.get_snapshot(self._last_snapshot_id)
+                            if not remaining_snapshot:
+                                logger.debug(f"Last snapshot {self._last_snapshot_id} was deleted during cleanup, clearing reference")
+                                self._last_snapshot_id = None
+                                self._last_snapshot_states.clear()
+                        except Exception:
+                            self._last_snapshot_id = None
+                            self._last_snapshot_states.clear()
+
+            except Exception as e:
+                logger.error(f"Post-snapshot cleanup failed: {e}")
+
             elapsed_time = time.time() - start_time
             logger.info(f"Snapshot {snapshot_id} created in {elapsed_time:.3f}s "
                        f"({len(current_states)} files, {len(file_changes)} changes)")
@@ -534,15 +612,15 @@ class SnapshotEngine(ISnapshotEngine):
     
     def _should_ignore_directory(self, dir_path: Path) -> bool:
         """Check if directory should be ignored during scanning.
-        
+
         Args:
             dir_path: Directory path to check
-            
+
         Returns:
             True if directory should be ignored
         """
         dir_name = dir_path.name
-        
+
         # Common directories to ignore
         ignore_patterns = {
             '.git', '.svn', '.hg',  # Version control
@@ -553,20 +631,37 @@ class SnapshotEngine(ISnapshotEngine):
             'target', 'build', 'dist',  # Build outputs
             '.claude-rewind'  # Our own storage
         }
-        
-        return dir_name in ignore_patterns or dir_name.startswith('.')
+
+        # Check hardcoded patterns first
+        if dir_name in ignore_patterns or dir_name.startswith('.'):
+            return True
+
+        # Check .gitignore patterns if enabled
+        if self._gitignore_spec:
+            try:
+                # Get relative path from project root
+                rel_path = dir_path.relative_to(self.project_root).as_posix()
+                # pathspec expects directory paths to end with /
+                if self._gitignore_spec.match_file(f"{rel_path}/"):
+                    logger.debug(f"Directory {rel_path} matched .gitignore")
+                    return True
+            except ValueError:
+                # Path not under project root
+                pass
+
+        return False
     
     def _should_ignore_file(self, file_path: Path) -> bool:
         """Check if file should be ignored during scanning.
-        
+
         Args:
             file_path: File path to check
-            
+
         Returns:
             True if file should be ignored
         """
         file_name = file_path.name
-        
+
         # Common file patterns to ignore
         ignore_patterns = {
             '.DS_Store',  # macOS
@@ -575,16 +670,31 @@ class SnapshotEngine(ISnapshotEngine):
             '*.pyc', '*.pyo', '*.pyd',  # Python compiled
             '*.log', '*.tmp', '*.temp',  # Temporary files
         }
-        
+
         # Check exact matches
         if file_name in ignore_patterns:
             return True
-        
+
         # Check file extensions
         suffix = file_path.suffix.lower()
         ignore_extensions = {'.pyc', '.pyo', '.pyd', '.log', '.tmp', '.temp'}
-        
-        return suffix in ignore_extensions
+
+        if suffix in ignore_extensions:
+            return True
+
+        # Check .gitignore patterns if enabled
+        if self._gitignore_spec:
+            try:
+                # Get relative path from project root
+                rel_path = file_path.relative_to(self.project_root).as_posix()
+                if self._gitignore_spec.match_file(rel_path):
+                    logger.debug(f"File {rel_path} matched .gitignore")
+                    return True
+            except ValueError:
+                # Path not under project root
+                pass
+
+        return False
     
     def _apply_filters(self, snapshots: List[SnapshotMetadata], 
                       filters: TimelineFilters) -> List[SnapshotMetadata]:
