@@ -64,7 +64,6 @@ class DiffViewer(IDiffViewer):
         Returns:
             True if file should be filtered out
         """
-        path_str = str(file_path)
         path_parts = file_path.parts
 
         # Filter out .claude-rewind directory

@@ -50,9 +50,7 @@ class ChangeAnalyzer:
         change_stats = self._analyze_diff(current_content, target_content)
         
         # Determine change type
-        change_type = self._determine_change_type(
-            current_content, target_content, change_stats
-        )
+        change_type = self._determine_change_type(current_content, target_content)
         
         # Calculate severity
         severity = self._calculate_severity(change_stats, change_type)
@@ -105,15 +103,13 @@ class ChangeAnalyzer:
         
         return stats
     
-    def _determine_change_type(self, current: str, target: str,
-                             stats: Dict[str, int]) -> str:
+    def _determine_change_type(self, current: str, target: str) -> str:
         """Determine the type of changes made.
-        
+
         Args:
             current: Current content
             target: Target content
-            stats: Diff statistics
-            
+
         Returns:
             Change type string
         """
@@ -262,7 +258,7 @@ class ChangeAnalyzer:
             return False
             
         changes = []
-        for c, t in zip(current_lines, target_lines):
+        for c, t in zip(current_lines, target_lines, strict=True):
             if c != t:
                 changes.append((c.strip(), t.strip()))
                 
@@ -272,7 +268,7 @@ class ChangeAnalyzer:
         # Check for similar patterns across changes
         pattern_count = 0
         for i, (c1, t1) in enumerate(changes):
-            for j, (c2, t2) in enumerate(changes[i+1:], i+1):
+            for _j, (c2, t2) in enumerate(changes[i+1:], i+1):
                 # Look for similar transformations
                 if self._similar_transformation(c1, t1, c2, t2):
                     pattern_count += 1
@@ -311,8 +307,8 @@ class ChangeAnalyzer:
         def get_indent(line: str) -> int:
             return len(line) - len(line.lstrip())
         
-        current_indents = [get_indent(l) for l in current.splitlines()]
-        target_indents = [get_indent(l) for l in target.splitlines()]
+        current_indents = [get_indent(line) for line in current.splitlines()]
+        target_indents = [get_indent(line) for line in target.splitlines()]
         
         return current_indents != target_indents
     
@@ -348,7 +344,7 @@ class ChangeAnalyzer:
         def get_docstrings(text: str) -> List[str]:
             docstrings = []
             lines = text.splitlines()
-            for i, line in enumerate(lines):
+            for line in lines:
                 if line.strip().startswith('"""') or line.strip().startswith("'''"):
                     docstrings.append(line)
             return docstrings

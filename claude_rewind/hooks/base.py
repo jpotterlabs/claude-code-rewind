@@ -17,35 +17,62 @@ class BaseHook(ABC):
         self.config: Dict[str, Any] = {}
         self.enabled = True
     
-    @abstractmethod
     def initialize(self, config: Dict[str, Any]) -> None:
         """Initialize hook with configuration.
-        
+
         Args:
             config: Hook configuration
         """
         self.config = config
         self.initialized = True
-    
-    @abstractmethod
+        self.on_initialize(config)
+
     def pre_action(self, context: HookContext) -> None:
         """Called before an action is executed.
-        
+
         Args:
             context: Hook context
         """
         if not self.initialized:
             raise RuntimeError(f"Hook {self.__class__.__name__} not initialized")
-    
-    @abstractmethod
+        self.on_pre_action(context)
+
     def post_action(self, context: HookContext) -> None:
         """Called after an action is executed.
-        
+
         Args:
             context: Hook context
         """
         if not self.initialized:
             raise RuntimeError(f"Hook {self.__class__.__name__} not initialized")
+        self.on_post_action(context)
+
+    @abstractmethod
+    def on_initialize(self, config: Dict[str, Any]) -> None:
+        """Hook-specific initialization logic. Override in subclasses.
+
+        Args:
+            config: Hook configuration
+        """
+        ...
+
+    @abstractmethod
+    def on_pre_action(self, context: HookContext) -> None:
+        """Hook-specific pre-action logic. Override in subclasses.
+
+        Args:
+            context: Hook context
+        """
+        ...
+
+    @abstractmethod
+    def on_post_action(self, context: HookContext) -> None:
+        """Hook-specific post-action logic. Override in subclasses.
+
+        Args:
+            context: Hook context
+        """
+        ...
     
     def cleanup(self) -> None:
         """Called when hook is being removed. Override if needed."""

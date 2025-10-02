@@ -19,21 +19,18 @@ class TestHook(BaseHook):
     should_cancel = False
     should_error = False
     
-    def initialize(self, config):
-        super().initialize(config)
+    def on_initialize(self, config):
         self.should_cancel = config.get('should_cancel', False)
         self.should_error = config.get('should_error', False)
-    
-    def pre_action(self, context):
-        super().pre_action(context)
+
+    def on_pre_action(self, context):
         self.pre_called = True
         if self.should_cancel:
             context.cancel("Test cancellation")
         if self.should_error:
             raise ValueError("Test error")
-    
-    def post_action(self, context):
-        super().post_action(context)
+
+    def on_post_action(self, context):
         self.post_called = True
         if self.should_error:
             raise ValueError("Test error")

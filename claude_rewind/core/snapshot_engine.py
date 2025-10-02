@@ -640,9 +640,9 @@ class SnapshotEngine(ISnapshotEngine):
         if self._gitignore_spec:
             try:
                 # Get relative path from project root
-                rel_path = dir_path.relative_to(self.project_root)
+                rel_path = dir_path.relative_to(self.project_root).as_posix()
                 # pathspec expects directory paths to end with /
-                if self._gitignore_spec.match_file(str(rel_path) + '/'):
+                if self._gitignore_spec.match_file(f"{rel_path}/"):
                     logger.debug(f"Directory {rel_path} matched .gitignore")
                     return True
             except ValueError:
@@ -686,8 +686,8 @@ class SnapshotEngine(ISnapshotEngine):
         if self._gitignore_spec:
             try:
                 # Get relative path from project root
-                rel_path = file_path.relative_to(self.project_root)
-                if self._gitignore_spec.match_file(str(rel_path)):
+                rel_path = file_path.relative_to(self.project_root).as_posix()
+                if self._gitignore_spec.match_file(rel_path):
                     logger.debug(f"File {rel_path} matched .gitignore")
                     return True
             except ValueError:
