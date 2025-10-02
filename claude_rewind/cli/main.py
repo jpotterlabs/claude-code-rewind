@@ -1468,5 +1468,228 @@ Press any key to continue...
         console.print("\n[dim]Exiting interactive diff viewer...[/dim]")
 
 
+@cli.command('hook-handler')
+@click.argument('event_type')
+@click.argument('event_data', type=click.STRING, default='{}')
+@click.pass_context
+def hook_handler(ctx: click.Context, event_type: str, event_data: str):
+    """Handle native hook event (called by Claude Code).
+
+    This command is invoked by Claude Code when hooks fire.
+    Not meant to be called directly by users.
+
+    Args:
+        event_type: Event type (e.g., "PostToolUse")
+        event_data: JSON string with event data
+    """
+    from ..native_hooks.handlers import handle_hook_event
+
+    project_root = ctx.obj['project_root']
+
+    try:
+        exit_code = handle_hook_event(event_type, event_data, project_root)
+        sys.exit(exit_code)
+    except Exception as e:
+        click.echo(f"Hook handler failed: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.group('hooks')
+@click.pass_context
+def hooks(ctx: click.Context):
+    """Manage native hooks integration."""
+    pass
+
+
+@hooks.command('init')
+@click.option('--force', is_flag=True, help='Overwrite existing hooks')
+@click.pass_context
+def hooks_init(ctx: click.Context, force: bool):
+    """Initialize native hooks in .claude/settings.json.
+
+    This configures Claude Code 2.0 to call claude-rewind when events fire.
+
+    Example:
+        $ claude-rewind hooks init
+        ✓ Configured .claude/settings.json with hooks
+        ✓ PostToolUse → automatic snapshots
+        ✓ SubagentStop → subagent tracking
+        ✓ SessionStart/End → lifecycle management
+    """
+    from ..native_hooks.registration import (
+        register_native_hooks,
+        is_hooks_registered,
+        get_claude_settings_path
+    )
+
+    project_root = ctx.obj['project_root']
+
+    try:
+        # Check if already registered
+        if is_hooks_registered(project_root) and not force:
+            click.echo("✓ Native hooks are already registered.")
+            click.echo("\nUse --force to overwrite existing hooks.")
+            return
+
+        # Register hooks
+        click.echo("Configuring native hooks...")
+        register_native_hooks(project_root)
+
+        # Success message
+        settings_path = get_claude_settings_path(project_root)
+        click.echo(f"\n✓ Configured {settings_path}")
+        click.echo("\nRegistered hooks:")
+        click.echo("  ✓ SessionStart/End → lifecycle management")
+        click.echo("  ✓ PostToolUse → automatic snapshots")
+        click.echo("  ✓ SubagentStart/Stop → subagent tracking")
+        click.echo("  ✓ Error → auto-suggest rollback")
+        click.echo("\n🎉 Claude Code Rewind is now event-driven!")
+        click.echo("\nNext: Restart Claude Code for hooks to take effect.")
+
+    except Exception as e:
+        click.echo(f"Failed to register hooks: {e}", err=True)
+        sys.exit(1)
+
+
+@hooks.command('status')
+@click.pass_context
+def hooks_status(ctx: click.Context):
+    """Show status of registered hooks.
+
+    Example:
+        $ claude-rewind hooks status
+        Status: Registered
+        Hooks: 7 active
+        ...
+    """
+    from ..native_hooks.registration import (
+        is_hooks_registered,
+        get_registered_hooks,
+        get_claude_settings_path
+    )
+
+    project_root = ctx.obj['project_root']
+
+    try:
+        settings_path = get_claude_settings_path(project_root)
+
+        if not settings_path.exists():
+            click.echo("Status: Not configured")
+            click.echo(f"File: {settings_path} (not found)")
+            click.echo("\nRun 'claude-rewind hooks init' to configure.")
+            return
+
+        if not is_hooks_registered(project_root):
+            click.echo("Status: Not registered")
+            click.echo(f"File: {settings_path}")
+            click.echo("\nRun 'claude-rewind hooks init' to register.")
+            return
+
+        # Get registered hooks
+        registered_hooks = get_registered_hooks(project_root)
+
+        click.echo("Status: ✓ Registered")
+        click.echo(f"File: {settings_path}")
+        click.echo(f"\nActive hooks: {len(registered_hooks)}")
+
+        for hook_name, hook_config in registered_hooks.items():
+            description = hook_config.get('description', 'No description')
+            click.echo(f"  ✓ {hook_name}")
+            click.echo(f"    {description}")
+
+    except Exception as e:
+        click.echo(f"Failed to check hooks status: {e}", err=True)
+        sys.exit(1)
+
+
+@hooks.command('disable')
+@click.option('--confirm', is_flag=True, help='Skip confirmation prompt')
+@click.pass_context
+def hooks_disable(ctx: click.Context, confirm: bool):
+    """Disable native hooks (remove from .claude/settings.json).
+
+    Example:
+        $ claude-rewind hooks disable
+    """
+    from ..native_hooks.registration import unregister_hooks, is_hooks_registered
+
+    project_root = ctx.obj['project_root']
+
+    try:
+        if not is_hooks_registered(project_root):
+            click.echo("✓ Native hooks are not registered.")
+            return
+
+        if not confirm:
+            if not click.confirm("Remove native hooks from .claude/settings.json?"):
+                click.echo("Cancelled.")
+                return
+
+        unregister_hooks(project_root)
+
+        click.echo("✓ Removed native hooks from .claude/settings.json")
+        click.echo("\nNote: Polling-based monitoring is still available via:")
+        click.echo("  claude-rewind monitor")
+
+    except Exception as e:
+        click.echo(f"Failed to disable hooks: {e}", err=True)
+        sys.exit(1)
+
+
+@hooks.command('test')
+@click.pass_context
+def hooks_test(ctx: click.Context):
+    """Test native hooks configuration.
+
+    Validates that hooks are registered correctly and can be invoked.
+
+    Example:
+        $ claude-rewind hooks test
+    """
+    from ..native_hooks.registration import get_registered_hooks, is_hooks_registered
+    from ..native_hooks.events import HookEventType
+
+    project_root = ctx.obj['project_root']
+
+    try:
+        if not is_hooks_registered(project_root):
+            click.echo("✗ Native hooks are not registered.")
+            click.echo("\nRun 'claude-rewind hooks init' first.")
+            sys.exit(1)
+
+        registered_hooks = get_registered_hooks(project_root)
+
+        click.echo("Testing native hooks configuration...\n")
+
+        # Check that all expected hooks are registered
+        expected_hooks = [
+            HookEventType.SESSION_START,
+            HookEventType.POST_TOOL_USE,
+            HookEventType.SUBAGENT_STOP,
+            HookEventType.ERROR
+        ]
+
+        all_registered = True
+        for hook_type in expected_hooks:
+            hook_name = hook_type.value
+            if hook_name in registered_hooks:
+                click.echo(f"  ✓ {hook_name} registered")
+            else:
+                click.echo(f"  ✗ {hook_name} missing")
+                all_registered = False
+
+        if all_registered:
+            click.echo("\n✅ All hooks are registered correctly!")
+            click.echo("\nHooks will be activated when you restart Claude Code.")
+        else:
+            click.echo("\n⚠️  Some hooks are missing.")
+            click.echo("\nRun 'claude-rewind hooks init --force' to fix.")
+            sys.exit(1)
+
+    except Exception as e:
+        click.echo(f"Test failed: {e}", err=True)
+        sys.exit(1)
+
+
 if __name__ == '__main__':
     cli()
