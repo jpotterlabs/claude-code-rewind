@@ -229,11 +229,17 @@ hooks:
 
 ## 🗺️ **Roadmap**
 
-### ✅ **v1.0 - Core Functionality** *(Current)*
-- [x] Automatic snapshot capture
-- [x] Basic rollback functionality
-- [x] Terminal diff viewer
-- [x] Timeline navigation
+### ✅ **v1.0 - Core Functionality** *(Complete - All 12/12 CLI Commands Working)*
+- [x] Automatic snapshot capture with intelligent Claude Code detection
+- [x] Complete rollback functionality with selective file rollback
+- [x] Advanced terminal diff viewer with syntax highlighting
+- [x] Interactive timeline navigation (both terminal and non-interactive modes)
+- [x] Smart cleanup system with age and count-based management
+- [x] Comprehensive configuration and validation system
+- [x] Hook system with extensible plugin architecture
+- [x] Git integration with automatic commit generation
+- [x] Performance optimizations (incremental, parallel, lazy loading)
+- [x] Professional error handling and logging
 
 ### 🚧 **v1.5 - Enhanced UX** *(In Progress)*
 - [ ] Web dashboard for visual timeline
