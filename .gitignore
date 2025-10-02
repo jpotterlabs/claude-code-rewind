@@ -154,3 +154,6 @@ cython_debug/
 ehthumbs.db
 Thumbs.db
 .aider*
+
+# Test scripts
+test_*.py
