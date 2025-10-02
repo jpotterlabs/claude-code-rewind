@@ -198,8 +198,12 @@ def monitor(ctx: click.Context, mode: str, sensitivity: str, no_backup: bool):
         sys.exit(1)
 
     # Initialize components
-    performance_config = PerformanceConfig()
-    snapshot_engine = SnapshotEngine(project_root, rewind_dir, performance_config)
+    config_manager = ConfigManager(project_root)
+    config = config_manager.load_config()
+    performance_config = config.performance
+    storage_config = config.storage
+    git_config = config.git_integration
+    snapshot_engine = SnapshotEngine(project_root, rewind_dir, performance_config, storage_config, git_config)
 
     click.echo(f"🎯 Starting Claude Code monitoring in {mode} mode...")
     click.echo(f"📍 Project: {project_root}")
@@ -374,8 +378,12 @@ def session(ctx: click.Context, action: str, show_recent: int):
         sys.exit(1)
 
     # Initialize components
-    performance_config = PerformanceConfig()
-    snapshot_engine = SnapshotEngine(project_root, rewind_dir, performance_config)
+    config_manager = ConfigManager(project_root)
+    config = config_manager.load_config()
+    performance_config = config.performance
+    storage_config = config.storage
+    git_config = config.git_integration
+    snapshot_engine = SnapshotEngine(project_root, rewind_dir, performance_config, storage_config, git_config)
     claude_manager = ClaudeHookManager(project_root, snapshot_engine, config)
 
     if action == 'start':

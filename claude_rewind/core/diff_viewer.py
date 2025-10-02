@@ -54,7 +54,47 @@ class DiffViewer(IDiffViewer):
         
         logger.debug(f"DiffViewer initialized with context_lines={context_lines}, "
                     f"colors={enable_colors}, syntax_highlighting={self.syntax_highlighting}")
-    
+
+    def _should_filter_file(self, file_path: Path) -> bool:
+        """Check if file should be filtered from diff output.
+
+        Args:
+            file_path: Path to check
+
+        Returns:
+            True if file should be filtered out
+        """
+        path_str = str(file_path)
+        path_parts = file_path.parts
+
+        # Filter out .claude-rewind directory
+        if '.claude-rewind' in path_parts:
+            return True
+
+        # Filter out other common directories to ignore
+        ignore_dirs = {
+            '.git', '.svn', '.hg',  # Version control
+            '__pycache__', '.pytest_cache',  # Python
+            'node_modules', '.npm',  # Node.js
+            '.venv', 'venv', 'env',  # Virtual environments
+            'target', 'build', 'dist',  # Build outputs
+        }
+
+        for part in path_parts:
+            if part in ignore_dirs or part.startswith('.'):
+                return True
+
+        # Filter out common files to ignore
+        file_name = file_path.name
+        if file_name.startswith('.'):
+            return True
+
+        ignore_extensions = {'.pyc', '.pyo', '.pyd', '.log', '.tmp', '.swp'}
+        if file_path.suffix.lower() in ignore_extensions:
+            return True
+
+        return False
+
     def _get_lexer_for_file(self, file_path: Path) -> Any:
         """Get appropriate lexer for file based on extension.
         
@@ -92,16 +132,20 @@ class DiffViewer(IDiffViewer):
             return code
     
     def _get_file_content(self, snapshot_id: SnapshotId, file_path: Path) -> Optional[str]:
-        """Get file content from snapshot.
-        
+        """Get file content from snapshot or current filesystem.
+
         Args:
-            snapshot_id: Snapshot identifier
+            snapshot_id: Snapshot identifier or "current" for current filesystem state
             file_path: Path to file
-            
+
         Returns:
             File content as string or None if file doesn't exist
         """
         try:
+            # Handle "current" as special case - read from current filesystem
+            if snapshot_id == "current":
+                return self._get_current_file_content(file_path)
+
             snapshot = self.storage_manager.load_snapshot(snapshot_id)
             if not snapshot:
                 raise DiffViewerError(f"Snapshot not found: {snapshot_id}")
@@ -428,8 +472,11 @@ class DiffViewer(IDiffViewer):
                 result_lines.append("=" * len(header))
                 result_lines.append("")
             
-            # Get all files that were affected
-            affected_files = set(snapshot.file_states.keys())
+            # Get all files that were affected, filtering out internal files
+            affected_files = {
+                f for f in snapshot.file_states.keys()
+                if not self._should_filter_file(f)
+            }
             
             # Also check current directory for files that might have been added since
             try:
@@ -438,6 +485,11 @@ class DiffViewer(IDiffViewer):
                     if file_path.is_file():
                         try:
                             relative_path = file_path.relative_to(Path.cwd())
+
+                            # Filter out internal and hidden files/directories
+                            if self._should_filter_file(relative_path):
+                                continue
+
                             current_files.add(relative_path)
                         except ValueError:
                             # Skip files outside current directory
