@@ -1691,5 +1691,54 @@ def hooks_test(ctx: click.Context):
         sys.exit(1)
 
 
+@cli.command('dashboard')
+@click.option('--host', default='127.0.0.1', help='Server host address')
+@click.option('--port', default=8080, help='Server port')
+@click.option('--no-browser', is_flag=True, help='Do not open browser automatically')
+@click.pass_context
+def dashboard(ctx: click.Context, host: str, port: int, no_browser: bool):
+    """Start the web dashboard server.
+
+    Opens an interactive web dashboard showing:
+    - Visual timeline of all snapshots
+    - Real-time snapshot monitoring
+    - Detailed diff viewer
+    - Session statistics
+
+    Examples:
+        claude-rewind dashboard
+        claude-rewind dashboard --port 9000
+        claude-rewind dashboard --no-browser
+    """
+    from ..web.server import DashboardServer
+
+    project_root = ctx.obj['project_root']
+
+    # Check if project is initialized
+    rewind_dir = project_root / '.claude-rewind'
+    if not rewind_dir.exists():
+        click.echo("Error: Project not initialized.", err=True)
+        click.echo("Run 'claude-rewind init' first.", err=True)
+        sys.exit(1)
+
+    click.echo("🌐 Starting Claude Code Rewind Dashboard...")
+    click.echo(f"✓ Server running at http://{host}:{port}")
+    click.echo(f"✓ Project: {project_root}")
+
+    if not no_browser:
+        click.echo("✓ Opening browser...")
+
+    click.echo("\nPress Ctrl+C to stop the server\n")
+
+    try:
+        server = DashboardServer(project_root, host=host, port=port)
+        server.run(open_browser=not no_browser)
+    except KeyboardInterrupt:
+        click.echo("\n\n✓ Dashboard server stopped")
+    except Exception as e:
+        click.echo(f"\nError starting dashboard: {e}", err=True)
+        sys.exit(1)
+
+
 if __name__ == '__main__':
     cli()
