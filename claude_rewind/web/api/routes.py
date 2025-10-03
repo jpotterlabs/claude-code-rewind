@@ -375,6 +375,56 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+@router.post("/rollback/{snapshot_id}")
+async def rollback_snapshot(
+    snapshot_id: str,
+    engine: SnapshotEngine = Depends(get_snapshot_engine),
+):
+    """Rollback project to a specific snapshot.
+
+    Args:
+        snapshot_id: Snapshot ID to rollback to
+        engine: Snapshot engine
+
+    Returns:
+        Rollback result with files restored count
+    """
+    try:
+        # Verify snapshot exists
+        metadata = engine.get_snapshot_metadata(snapshot_id)
+        if not metadata:
+            raise HTTPException(status_code=404, detail=f"Snapshot {snapshot_id} not found")
+
+        # Perform rollback
+        # Note: This uses the existing rollback functionality
+        from ...rollback.analyzer import RollbackAnalyzer
+
+        analyzer = RollbackAnalyzer(engine.db_manager, engine.file_store, engine.project_root)
+        files_to_restore = analyzer.analyze_rollback(snapshot_id)
+
+        # Execute rollback
+        files_restored = 0
+        for file_path in files_to_restore:
+            try:
+                engine._restore_file(snapshot_id, file_path)
+                files_restored += 1
+            except Exception as e:
+                logger.warning(f"Failed to restore {file_path}: {e}")
+
+        return {
+            "success": True,
+            "snapshot_id": snapshot_id,
+            "files_restored": files_restored,
+            "message": f"Successfully rolled back to {snapshot_id}"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to rollback to {snapshot_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time updates.

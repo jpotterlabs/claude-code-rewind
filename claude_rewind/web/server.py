@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 import asyncio
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse
@@ -65,7 +65,7 @@ class DashboardServer:
             templates = Jinja2Templates(directory=str(templates_dir))
 
             @app.get("/", response_class=HTMLResponse)
-            async def dashboard_index(request):
+            async def dashboard_index(request: Request):
                 """Serve dashboard HTML."""
                 return templates.TemplateResponse("index.html", {"request": request})
 

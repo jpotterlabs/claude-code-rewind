@@ -138,6 +138,35 @@
             font-size: 0.875rem;
         }
 
+        .snapshot-actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .rewind-btn {
+            background: #6366f1;
+            color: white;
+            border: none;
+            padding: 4px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.75rem;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .rewind-btn:hover {
+            background: #4f46e5;
+            transform: scale(1.05);
+        }
+
+        .rewind-btn:active {
+            transform: scale(0.95);
+        }
+
         .snapshot-description {
             color: #cbd5e1;
             margin-bottom: 8px;
@@ -308,8 +337,15 @@
                         ${snapshots.map(snapshot => `
                             <li class="snapshot-item">
                                 <div class="snapshot-header">
-                                    <span class="snapshot-id">${snapshot.id}</span>
-                                    <span class="snapshot-time">${formatTime(snapshot.timestamp)}</span>
+                                    <div>
+                                        <span class="snapshot-id">${snapshot.id}</span>
+                                    </div>
+                                    <div class="snapshot-actions">
+                                        <span class="snapshot-time">${formatTime(snapshot.timestamp)}</span>
+                                        <button class="rewind-btn" onclick="rewindToSnapshot('${snapshot.id}')" title="Rollback to this snapshot">
+                                            ⏪ Rewind
+                                        </button>
+                                    </div>
                                 </div>
                                 <div class="snapshot-description">${snapshot.description}</div>
                                 <div class="snapshot-tags">
@@ -338,6 +374,33 @@
             setTimeout(() => {
                 container.innerHTML = '';
             }, 5000);
+        }
+
+        // Rewind to snapshot
+        async function rewindToSnapshot(snapshotId) {
+            if (!confirm(`Are you sure you want to rollback to snapshot ${snapshotId}?\n\nThis will restore your project to the state at that snapshot.`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE}/rollback/${snapshotId}`, {
+                    method: 'POST'
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Rollback failed');
+                }
+
+                const result = await response.json();
+                alert(`✅ Successfully rolled back to ${snapshotId}\n\n${result.files_restored} files restored`);
+
+                // Reload data to reflect changes
+                loadData();
+            } catch (error) {
+                console.error('Rollback failed:', error);
+                showError(`Rollback failed: ${error.message}`);
+            }
         }
 
         // Load all data
