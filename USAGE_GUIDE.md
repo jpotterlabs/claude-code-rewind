@@ -7,15 +7,16 @@ The definitive guide to mastering the Claude Code Rewind Tool - your time machin
 1. [Quick Start](#-quick-start)
 2. [Core Concepts](#-core-concepts)
 3. [Command Reference](#-command-reference)
-4. [Monitoring & Sessions](#-monitoring--sessions)
-5. [Timeline Navigation](#-timeline-navigation)
-6. [Diff Analysis](#-diff-analysis)
-7. [Rollback Operations](#-rollback-operations)
-8. [Advanced Workflows](#-advanced-workflows)
-9. [Configuration](#-configuration)
-10. [Tips & Tricks](#-tips--tricks)
-11. [Troubleshooting](#-troubleshooting)
-12. [Real-World Examples](#-real-world-examples)
+4. [Native Hooks (Event-Driven)](#-native-hooks-event-driven)
+5. [Monitoring & Sessions](#-monitoring--sessions)
+6. [Timeline Navigation](#-timeline-navigation)
+7. [Diff Analysis](#-diff-analysis)
+8. [Rollback Operations](#-rollback-operations)
+9. [Advanced Workflows](#-advanced-workflows)
+10. [Configuration](#-configuration)
+11. [Tips & Tricks](#-tips--tricks)
+12. [Troubleshooting](#-troubleshooting)
+13. [Real-World Examples](#-real-world-examples)
 
 ---
 
@@ -24,7 +25,7 @@ The definitive guide to mastering the Claude Code Rewind Tool - your time machin
 ### 1. Installation & Setup
 ```bash
 # Install the package
-git clone https://github.com/holasoymalva/claude-code-rewind.git
+git clone https://github.com/jpotterlabs/claude-code-rewind.git
 cd claude-code-rewind
 pip install -e .
 
@@ -32,8 +33,15 @@ pip install -e .
 cd your-project
 claude-rewind init
 
-# Start monitoring (the magic begins!)
+# Choose your monitoring approach:
+
+# Option A: Event-driven (recommended for Claude Code 2.0+)
+claude-rewind hooks init
+# Snapshots created instantly by Claude Code
+
+# Option B: Polling (fallback for older versions)
 claude-rewind monitor
+# Background monitoring every 2 seconds
 ```
 
 ### 2. Basic Workflow
@@ -201,6 +209,154 @@ claude-rewind session --action stop
 - Action count and types
 - Recent actions list
 - Monitoring status
+
+---
+
+## 🎣 Native Hooks (Event-Driven)
+
+**Available in v1.5a+ for Claude Code 2.0+**
+
+Native hooks provide **instant, zero-latency** snapshot creation by integrating directly with Claude Code's event system.
+
+### Overview
+
+Instead of polling for changes every 2 seconds, Claude Code **instantly notifies** Rewind when events occur, providing:
+- ⚡ Zero latency (snapshots created immediately)
+- 🧠 Rich context (extended thinking, confidence scores, prompt context)
+- 🤖 Subagent tracking (separate snapshots for subagent work)
+- 🎯 Tool attribution (know exactly which tool made changes)
+- 💾 No background process (event-driven, not polling)
+
+### Hook Commands
+
+#### `claude-rewind hooks init`
+**Purpose**: Enable native hooks integration
+
+```bash
+claude-rewind hooks init [--force]
+```
+
+**What it does**:
+- Creates/updates `.claude/settings.json`
+- Registers 7 native hooks with Claude Code
+- Preserves existing user hooks
+
+**Output**:
+```
+✓ Configured .claude/settings.json
+✓ Registered 7 native hooks
+🎉 Claude Code Rewind is now event-driven!
+```
+
+---
+
+#### `claude-rewind hooks status`
+**Purpose**: Show hook registration status
+
+```bash
+claude-rewind hooks status
+```
+
+**Example output**:
+```
+Status: ✓ Registered
+Active hooks: 7
+  ✓ SessionStart    - Initialize session tracking
+  ✓ SessionEnd      - Finalize session tracking
+  ✓ PostToolUse     - Create automatic snapshot
+  ✓ SubagentStop    - Capture subagent work completion
+  ✓ Error           - Auto-suggest rollback on errors
+  ...
+```
+
+---
+
+#### `claude-rewind hooks test`
+**Purpose**: Validate hook configuration
+
+```bash
+claude-rewind hooks test
+```
+
+Checks:
+- `.claude/settings.json` exists and is valid
+- All 7 hooks are registered correctly
+- `claude-rewind` command is in PATH
+
+---
+
+#### `claude-rewind hooks disable`
+**Purpose**: Disable native hooks (revert to polling)
+
+```bash
+claude-rewind hooks disable [--confirm]
+```
+
+**Use cases**:
+- Troubleshooting hook issues
+- Testing performance differences
+- Temporarily reverting to polling
+
+---
+
+### Event Types
+
+Native hooks capture these Claude Code events:
+
+| Event | When | Creates Snapshot | Tags |
+|-------|------|------------------|------|
+| **SessionStart** | Session begins | Yes | `session-start` |
+| **SessionEnd** | Session ends | Yes | `session-end` |
+| **PreToolUse** | Before tool execution | No (logged) | - |
+| **PostToolUse** | After tool use | Yes ⭐ | `auto`, `tool:{name}` |
+| **SubagentStart** | Subagent delegated | Yes | `subagent-start` |
+| **SubagentStop** | Subagent completes | Yes ⭐ | `subagent-stop` |
+| **Error** | Error occurs | Yes | `error`, `error-type:{type}` |
+
+**Primary snapshot sources**: `PostToolUse` (most frequent) and `SubagentStop`
+
+---
+
+### Filtering by Hook Events
+
+Use tags to filter snapshots by event type:
+
+```bash
+# Only error snapshots
+claude-rewind timeline --tags error
+
+# Only Edit tool snapshots
+claude-rewind timeline --tags tool:Edit
+
+# Only subagent snapshots
+claude-rewind timeline --tags subagent-stop
+
+# Session lifecycle
+claude-rewind timeline --tags session-start,session-end
+```
+
+---
+
+### Hooks vs Monitor Comparison
+
+| Feature | `hooks init` (Event-Driven) | `monitor` (Polling) |
+|---------|------------------------------|----------------------|
+| **Latency** | 0ms (instant) | 2+ seconds |
+| **Context** | Rich (thinking, confidence) | File changes only |
+| **Overhead** | No background process | Background process |
+| **Subagent Tracking** | Yes (separate snapshots) | No |
+| **Error Detection** | Yes (auto-rollback suggestions) | No |
+| **Claude Version** | 2.0+ required | All versions |
+
+**Recommendation**: Use `hooks init` for Claude Code 2.0+, fall back to `monitor` for older versions.
+
+---
+
+### Complete Documentation
+
+For comprehensive native hooks documentation, see:
+- 📚 [Native Hooks Guide](NATIVE_HOOKS_GUIDE.md) - User guide with examples
+- 🔧 [Hooks API Reference](HOOKS_API_REFERENCE.md) - Technical reference for developers
 
 ---
 
