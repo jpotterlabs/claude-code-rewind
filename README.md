@@ -84,8 +84,17 @@ claude-rewind --help
 cd your-project
 claude-rewind init
 
-# Start intelligent monitoring
+# Choose your monitoring approach:
+
+# Option A: Event-driven (recommended for Claude Code 2.0+)
+claude-rewind hooks init
+# ✓ Zero-latency snapshots
+# ✓ Rich context capture
+# ✓ No background process needed
+
+# Option B: Polling (fallback for older versions)
 claude-rewind monitor
+# Background monitoring every 2 seconds
 
 # That's it! Claude Code Rewind Tool is now protecting your code
 ```
@@ -241,10 +250,25 @@ hooks:
 - [x] Performance optimizations (incremental, parallel, lazy loading)
 - [x] Professional error handling and logging
 
-### 🚧 **v1.5 - Enhanced UX** *(In Progress)*
-- [ ] Web dashboard for visual timeline
-- [ ] VSCode extension integration
-- [ ] Real-time diff streaming
+### ✅ **v1.5a - Native Hooks Support** *(Complete)*
+- [x] Event-driven snapshot creation (zero latency)
+- [x] Rich context capture (extended thinking, confidence scores)
+- [x] Subagent-aware tracking
+- [x] Auto-rollback suggestions on errors
+- [x] Session lifecycle management
+- [x] CLI commands for hook management
+
+📚 **[Native Hooks Guide](NATIVE_HOOKS_GUIDE.md)** - Complete documentation on event-driven snapshots
+
+### 🚧 **v1.5b - Web Dashboard** *(In Progress)*
+- [ ] Visual timeline with D3.js
+- [ ] Real-time snapshot monitoring
+- [ ] Advanced diff viewer with Monaco Editor
+- [ ] Interactive rollback interface
+
+### 🔮 **v1.5c - Real-Time Streaming** *(Planned)*
+- [ ] WebSocket-based live diff streaming
+- [ ] Watch mode for continuous monitoring
 - [ ] Smart rollback suggestions
 
 ### 🔮 **v2.0 - Team Features** *(Q2 2024)*
@@ -312,13 +336,18 @@ pytest
 
 ---
 
+## 📚 **Documentation**
+
+- 📖 [Usage Guide](USAGE_GUIDE.md) - Complete CLI reference and workflows
+- 🎣 [Native Hooks Guide](NATIVE_HOOKS_GUIDE.md) - Event-driven snapshots with Claude Code 2.0
+- 🔧 [API Reference](HOOKS_API_REFERENCE.md) - Technical reference for developers
+- 🚀 [Installation Guide](INSTALLATION.md) - Detailed setup instructions
+- 🗺️ [Complete Roadmap](COMPLETE_ROADMAP.md) - Future development plans
+
 ## 📞 **Support & Community**
 
-- 💬 [Discord Community](https://discord.gg/claude-rewind)
-- 📧 [Email Support](mailto:support@claude-rewind.dev)
-- 🐛 [GitHub Issues](https://github.com/holasoymalva/claude-code-rewind/issues)
-- 📚 [Documentation](https://docs.claude-rewind.dev)
-- 🐦 [Twitter Updates](https://twitter.com/claude_rewind)
+- 🐛 [GitHub Issues](https://github.com/jpotterlabs/claude-code-rewind/issues)
+- 📧 Email: support@jpotterlabs.com
 
 ---
 
